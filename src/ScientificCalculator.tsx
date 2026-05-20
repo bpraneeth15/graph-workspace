@@ -21,6 +21,7 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
   const [expression, setExpression] = useState("");
   const [result, setResult] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   const [position, setPosition] = useState({ x: 380, y: 84 });
   const [drag, setDrag] = useState<{
     pointerId: number;
@@ -106,6 +107,20 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
     });
   };
 
+  if (collapsed) {
+    return (
+      <button
+        aria-label="Open calculator"
+        className="calculator-float-button"
+        onClick={() => setCollapsed(false)}
+        style={{ left: position.x, top: position.y }}
+        type="button"
+      >
+        +/-
+      </button>
+    );
+  }
+
   return (
     <aside
       className="scientific-calculator"
@@ -118,7 +133,17 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
         onPointerUp={() => setDrag(null)}
       >
         <strong>Calculator</strong>
-        <span>drag</span>
+        <div className="calculator-title-actions">
+          <button
+            aria-label="Collapse calculator"
+            onClick={() => setCollapsed(true)}
+            onPointerDown={(event) => event.stopPropagation()}
+            type="button"
+          >
+            -
+          </button>
+          <span>drag</span>
+        </div>
       </div>
 
       <div className="calculator-context">

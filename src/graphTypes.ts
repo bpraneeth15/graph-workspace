@@ -2,6 +2,7 @@ export type GraphPoint = {
   id: number;
   x: number;
   y: number;
+  color?: string;
 };
 
 export type GraphLine = {
@@ -39,6 +40,7 @@ export type GraphMeasure = {
 };
 
 export type DataPlotStyle = "scatter" | "line" | "scatter-line" | "bar";
+export type DataPointStyle = "filled" | "ring";
 
 export type DataValue = {
   x: number;
@@ -51,6 +53,7 @@ export type DataPlot = {
   values: DataValue[];
   color: string;
   style: DataPlotStyle;
+  pointStyle: DataPointStyle;
 };
 
 export type ObjectTarget =

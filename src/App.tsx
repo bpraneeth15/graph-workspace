@@ -13,6 +13,7 @@ import { ScientificCalculator } from "./ScientificCalculator";
 import type {
   CalculatorGuide,
   DataPlot,
+  DataPointStyle,
   DataPlotStyle,
   DataValue,
   GraphCurve,
@@ -179,8 +180,10 @@ const App = () => {
   const [manualX, setManualX] = useState("");
   const [manualY, setManualY] = useState("");
   const [dataName, setDataName] = useState("Data set");
-  const [dataInput, setDataInput] = useState("0, 0\n1, 1\n2, 4\n3, 9");
+  const [dataInput, setDataInput] = useState("(0, 0)\n(1, 1)\n(2, 4)\n(3, 9)");
   const [dataPlotStyle, setDataPlotStyle] = useState<DataPlotStyle>("scatter");
+  const [dataXInput, setDataXInput] = useState("");
+  const [dataYInput, setDataYInput] = useState("");
   const [dataError, setDataError] = useState("");
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedObject, setSelectedObject] = useState<ObjectTarget | null>(null);
@@ -344,6 +347,7 @@ const App = () => {
         id: nextPointId.current++,
         x: roundCoordinate(x),
         y: roundCoordinate(y),
+        color: selectedColor,
       },
     ]);
   };
@@ -721,7 +725,9 @@ const App = () => {
     if (target.kind === "point") {
       setPoints((current) =>
         current.map((point) =>
-          point.id === target.id ? { ...point, x: nextPoint.x, y: nextPoint.y } : point
+          point.id === target.id
+            ? { ...point, x: nextPoint.x, y: nextPoint.y }
+            : point
         )
       );
       return;
@@ -875,6 +881,67 @@ const App = () => {
     if (target.kind === "curve") return curves.find((curve) => curve.id === target.id) ?? null;
     if (target.kind === "shape") return shapes.find((shape) => shape.id === target.id) ?? null;
     return measures.find((measure) => measure.id === target.id) ?? null;
+  };
+
+  const getSelectedObjectColor = () => {
+    const selected = getObject(selectedObject);
+    return selected?.color ?? null;
+  };
+
+  const updateObjectColor = (target: ObjectTarget | null, color: string) => {
+    if (!target) return;
+    pushHistory();
+    if (target.kind === "line") {
+      setLines((current) =>
+        current.map((line) => (line.id === target.id ? { ...line, color } : line))
+      );
+      return;
+    }
+    if (target.kind === "curve") {
+      setCurves((current) =>
+        current.map((curve) => (curve.id === target.id ? { ...curve, color } : curve))
+      );
+      return;
+    }
+    if (target.kind === "shape") {
+      setShapes((current) =>
+        current.map((shape) => (shape.id === target.id ? { ...shape, color } : shape))
+      );
+      return;
+    }
+    setMeasures((current) =>
+      current.map((measure) =>
+        measure.id === target.id ? { ...measure, color } : measure
+      )
+    );
+  };
+
+  const applyDrawingColor = (color: string) => {
+    setSelectedColor(color);
+    if (selectedObject) {
+      updateObjectColor(selectedObject, color);
+    }
+  };
+
+  const updateDataPlotColor = (plotId: number, color: string) => {
+    pushHistory();
+    setDataPlots((current) =>
+      current.map((plot) => (plot.id === plotId ? { ...plot, color } : plot))
+    );
+  };
+
+  const updateDataPlotPointStyle = (plotId: number, pointStyle: DataPointStyle) => {
+    pushHistory();
+    setDataPlots((current) =>
+      current.map((plot) => (plot.id === plotId ? { ...plot, pointStyle } : plot))
+    );
+  };
+
+  const updatePointColor = (pointId: number, color: string) => {
+    pushHistory();
+    setPoints((current) =>
+      current.map((point) => (point.id === pointId ? { ...point, color } : point))
+    );
   };
 
   const updateLabelVisibility = (target: ObjectTarget, showLabel: boolean) => {
@@ -1039,9 +1106,28 @@ const App = () => {
         values: parsed.values,
         color: selectedColor,
         style: dataPlotStyle,
+        pointStyle: "filled",
       },
     ]);
     fitViewToValues(parsed.values);
+    setDataError("");
+  };
+
+  const addDataCoordinatePair = () => {
+    const x = Number(dataXInput);
+    const y = Number(dataYInput);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      setDataError("Enter valid x_coordinate and y_coordinate values.");
+      return;
+    }
+
+    const nextPair = `(${roundCoordinate(x)}, ${roundCoordinate(y)})`;
+    setDataInput((current) => {
+      const trimmed = current.trim();
+      return trimmed ? `${trimmed}\n${nextPair}` : nextPair;
+    });
+    setDataXInput("");
+    setDataYInput("");
     setDataError("");
   };
 
@@ -1624,6 +1710,7 @@ const App = () => {
     target: ObjectTarget,
     showLabel: boolean
   ) => showLabel;
+  const activeColor = getSelectedObjectColor() ?? selectedColor;
   const formatObjectForCalculator = (target: ObjectTarget) => {
     if (target.kind === "line") {
       const line = lines.find((item) => item.id === target.id);
@@ -1746,14 +1833,14 @@ const App = () => {
             </button>
           </div>
           <div className="color-tools">
-            <span>Color</span>
+            <span>{selectedObject ? "Selected color" : "Color"}</span>
             <div className="swatches">
               {COLOR_SWATCHES.map((color) => (
                 <button
                   aria-label={`Select color ${color}`}
-                  className={selectedColor === color ? "swatch active" : "swatch"}
+                  className={activeColor === color ? "swatch active" : "swatch"}
                   key={color}
-                  onClick={() => setSelectedColor(color)}
+                  onClick={() => applyDrawingColor(color)}
                   style={{ backgroundColor: color }}
                   type="button"
                 />
@@ -1762,12 +1849,17 @@ const App = () => {
                 <span>Custom</span>
                 <input
                   aria-label="Custom drawing color"
-                  onChange={(event) => setSelectedColor(event.target.value)}
+                  onChange={(event) => applyDrawingColor(event.target.value)}
                   type="color"
-                  value={selectedColor}
+                  value={activeColor}
                 />
               </label>
             </div>
+            <small>
+              {selectedObject
+                ? "Changes the selected object now."
+                : "Sets the color for new objects."}
+            </small>
           </div>
         </section>
 
@@ -1943,11 +2035,41 @@ const App = () => {
                 <option value="bar">Bar</option>
               </select>
             </label>
+            {(dataPlotStyle === "scatter" || dataPlotStyle === "scatter-line") ? (
+              <div className="data-coordinate-entry">
+                <label>
+                  <span>x_coordinate</span>
+                  <input
+                    inputMode="decimal"
+                    onChange={(event) => setDataXInput(event.target.value)}
+                    placeholder="1"
+                    step="any"
+                    type="number"
+                    value={dataXInput}
+                  />
+                </label>
+                <label>
+                  <span>y_coordinate</span>
+                  <input
+                    inputMode="decimal"
+                    onChange={(event) => setDataYInput(event.target.value)}
+                    placeholder="2"
+                    step="any"
+                    type="number"
+                    value={dataYInput}
+                  />
+                </label>
+                <button onClick={addDataCoordinatePair} type="button">
+                  Add pair
+                </button>
+              </div>
+            ) : null}
             <label className="field">
-              <span>Values</span>
+              <span>{getDataInputLabel(dataPlotStyle)}</span>
               <textarea
                 className="data-textarea"
                 onChange={(event) => setDataInput(event.target.value)}
+                placeholder={getDataInputPlaceholder(dataPlotStyle)}
                 spellCheck={false}
                 value={dataInput}
               />
@@ -1986,11 +2108,36 @@ const App = () => {
               <p className="empty-state">Generate a plot from pasted values.</p>
             ) : (
               dataPlots.map((plot, index) => (
-                <div className="equation-row" key={plot.id}>
+                <div className="equation-row data-row" key={plot.id}>
                   <span>DS{index + 1}</span>
+                  <input
+                    aria-label={`Change data plot ${index + 1} color`}
+                    className="row-color-input"
+                    onChange={(event) => updateDataPlotColor(plot.id, event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    type="color"
+                    value={plot.color}
+                  />
                   <code>
                     {plot.name}: {plot.values.length} points
                   </code>
+                  <button
+                    aria-label={
+                      (plot.pointStyle ?? "filled") === "filled"
+                        ? `Show data plot ${index + 1} points as rings`
+                        : `Fill data plot ${index + 1} points`
+                    }
+                    onClick={() =>
+                      updateDataPlotPointStyle(
+                        plot.id,
+                        (plot.pointStyle ?? "filled") === "filled" ? "ring" : "filled"
+                      )
+                    }
+                    title={(plot.pointStyle ?? "filled") === "filled" ? "Filled points" : "Ring points"}
+                    type="button"
+                  >
+                    {(plot.pointStyle ?? "filled") === "filled" ? "fill" : "ring"}
+                  </button>
                   <button
                     aria-label={
                       plot.style === "scatter-line"
@@ -2306,6 +2453,14 @@ const App = () => {
               points.map((point, index) => (
                 <div className="point-row" key={point.id}>
                   <span>P{index + 1}</span>
+                  <input
+                    aria-label={`Change point ${index + 1} color`}
+                    className="row-color-input"
+                    onChange={(event) => updatePointColor(point.id, event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    type="color"
+                    value={point.color ?? "#d94f30"}
+                  />
                   <code>
                     ({point.x}, {point.y})
                   </code>
@@ -2537,6 +2692,21 @@ const getToolHelp = (tool: Tool, draftCount: number) => {
       : "Click the second point to finish the distance marker.";
   }
   return "Left click objects to select and edit. Right click drag to move around.";
+};
+
+const getDataInputLabel = (style: DataPlotStyle) => {
+  if (style === "scatter" || style === "scatter-line") {
+    return "Coordinate values: (x_coordinate, y_coordinate)";
+  }
+  if (style === "bar") {
+    return "Bar values: (x_position, value)";
+  }
+  return "Line values: (x_coordinate, y_coordinate)";
+};
+
+const getDataInputPlaceholder = (style: DataPlotStyle) => {
+  if (style === "bar") return "(1, 12)\n(2, 18)\n(3, 9)";
+  return "(1, 2)\n(2, 4)\n(3, 6)";
 };
 
 const formatNumber = (value: number) => {
@@ -3199,9 +3369,10 @@ const drawGraph = (
 
   graph.points.forEach((point, index) => {
     const screen = toScreen(point);
+    const pointColor = point.color ?? "#d94f30";
     context.beginPath();
-    context.fillStyle = "#d94f30";
-    context.strokeStyle = "#7f2a18";
+    context.fillStyle = pointColor;
+    context.strokeStyle = pointColor;
     context.lineWidth = 2;
     context.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
     context.fill();
@@ -3234,6 +3405,11 @@ const parseDataValues = (
       ok: false,
       message: "Enter at least one x, y pair. Example: 1, 2",
     };
+  }
+
+  const coordinatePairValues = parseCoordinatePairValues(trimmed);
+  if (coordinatePairValues.length > 0) {
+    return { ok: true, values: coordinatePairValues };
   }
 
   const jsonValues = parseJsonDataValues(trimmed);
@@ -3298,6 +3474,25 @@ const parseDataValues = (
   }
 
   return { ok: true, values };
+};
+
+const numberPattern = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[-+]?\\d+)?";
+
+const parseCoordinatePairValues = (input: string) => {
+  const pairPattern = new RegExp(
+    `\\(\\s*(${numberPattern})\\s*,\\s*(${numberPattern})\\s*\\)`,
+    "gi"
+  );
+  const values: DataValue[] = [];
+  let match = pairPattern.exec(input);
+  while (match) {
+    values.push({
+      x: roundCoordinate(Number(match[1])),
+      y: roundCoordinate(Number(match[2])),
+    });
+    match = pairPattern.exec(input);
+  }
+  return values;
 };
 
 const parseJsonDataValues = (input: string) => {
@@ -3486,7 +3681,7 @@ const drawDataPlot = (
       );
       context.fill();
       context.stroke();
-      drawDataPoint(context, top, plot.color);
+      drawDataPoint(context, top, plot.color, plot.pointStyle ?? "filled");
     });
     return;
   }
@@ -3504,17 +3699,23 @@ const drawDataPlot = (
   }
 
   sortedValues.forEach((value) => {
-    drawDataPoint(context, toScreen({ id: 0, x: value.x, y: value.y }), plot.color);
+    drawDataPoint(
+      context,
+      toScreen({ id: 0, x: value.x, y: value.y }),
+      plot.color,
+      plot.pointStyle ?? "filled"
+    );
   });
 };
 
 const drawDataPoint = (
   context: CanvasRenderingContext2D,
   point: { x: number; y: number },
-  color: string
+  color: string,
+  pointStyle: DataPointStyle
 ) => {
   context.beginPath();
-  context.fillStyle = "#ffffff";
+  context.fillStyle = pointStyle === "filled" ? color : "#ffffff";
   context.strokeStyle = color;
   context.lineWidth = 2.2;
   context.arc(point.x, point.y, 5.5, 0, Math.PI * 2);

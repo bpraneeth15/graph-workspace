@@ -190,6 +190,11 @@ button:disabled {
   font-size: 14px;
 }
 
+.color-tools small {
+  color: #65717b;
+  font-size: 12px;
+}
+
 .swatches {
   display: flex;
   align-items: center;
@@ -363,6 +368,34 @@ button:disabled {
   gap: 10px;
 }
 
+.data-coordinate-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.data-coordinate-entry label {
+  display: grid;
+  gap: 5px;
+}
+
+.data-coordinate-entry span {
+  color: #4a433d;
+  font-size: 13px;
+}
+
+.data-coordinate-entry input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #cfd5da;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #151719;
+  padding: 0 9px;
+}
+
 .data-textarea {
   width: 100%;
   min-height: 120px;
@@ -472,12 +505,16 @@ button:disabled {
 }
 
 .point-row {
-  grid-template-columns: 40px minmax(0, 1fr) 34px;
+  grid-template-columns: 40px 30px minmax(0, 1fr) 34px;
 }
 
 .equation-row {
   grid-template-columns: 40px minmax(0, 1fr) 34px 34px;
   cursor: pointer;
+}
+
+.equation-row.data-row {
+  grid-template-columns: 40px 30px minmax(0, 1fr) 44px 34px 34px;
 }
 
 .equation-row:hover,
@@ -514,6 +551,15 @@ button:disabled {
 .equation-row button {
   min-height: 28px;
   padding: 0;
+}
+
+.row-color-input {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #cfd5da;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 2px;
 }
 
 .equation-label-toggle {
@@ -671,6 +717,22 @@ button:disabled {
   padding: 10px;
 }
 
+.calculator-float-button {
+  position: fixed;
+  z-index: 21;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  border: 1px solid #28666e;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #28666e;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+  font-size: 14px;
+  font-weight: 900;
+}
+
 .calculator-titlebar {
   display: flex;
   align-items: center;
@@ -680,6 +742,21 @@ button:disabled {
   cursor: move;
   padding-bottom: 7px;
   user-select: none;
+}
+
+.calculator-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.calculator-title-actions button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  min-height: 24px;
+  padding: 0;
+  font-weight: 900;
 }
 
 .calculator-titlebar span {
