@@ -1,4 +1,6 @@
 import {
+  ChangeEvent,
+  CSSProperties,
   FormEvent,
   PointerEvent,
   ReactNode,
@@ -7,46 +9,19 @@ import {
   useRef,
   useState,
 } from "react";
-
-type GraphPoint = {
-  id: number;
-  x: number;
-  y: number;
-};
-
-type GraphLine = {
-  id: number;
-  a: GraphPoint;
-  b: GraphPoint;
-  color: string;
-  showLabel: boolean;
-};
-
-type GraphCurve = {
-  id: number;
-  a: GraphPoint;
-  b: GraphPoint;
-  c: GraphPoint;
-  color: string;
-  showLabel: boolean;
-};
-
-type GraphShape = {
-  id: number;
-  type: "rectangle" | "square";
-  a: GraphPoint;
-  b: GraphPoint;
-  color: string;
-  showLabel: boolean;
-};
-
-type GraphMeasure = {
-  id: number;
-  a: GraphPoint;
-  b: GraphPoint;
-  color: string;
-  showLabel: boolean;
-};
+import { ScientificCalculator } from "./ScientificCalculator";
+import type {
+  CalculatorGuide,
+  DataPlot,
+  DataPlotStyle,
+  DataValue,
+  GraphCurve,
+  GraphLine,
+  GraphMeasure,
+  GraphPoint,
+  GraphShape,
+  ObjectTarget,
+} from "./graphTypes";
 
 type GraphSnapshot = {
   points: GraphPoint[];
@@ -54,6 +29,7 @@ type GraphSnapshot = {
   curves: GraphCurve[];
   shapes: GraphShape[];
   measures: GraphMeasure[];
+  dataPlots: DataPlot[];
 };
 
 type ViewState = {
@@ -69,18 +45,18 @@ type HandleTarget =
   | { kind: "line"; id: number; handle: "a" | "b" }
   | { kind: "curve"; id: number; handle: "a" | "b" | "c" }
   | { kind: "shape"; id: number; handle: "a" | "b" }
-  | { kind: "measure"; id: number; handle: "a" | "b" };
-
-type ObjectTarget =
-  | { kind: "line"; id: number }
-  | { kind: "curve"; id: number }
-  | { kind: "shape"; id: number }
-  | { kind: "measure"; id: number };
+  | { kind: "measure"; id: number; handle: "a" | "b" }
+  | { kind: "data"; id: number; pointIndex: number };
 
 type HoverMenu = {
   target: ObjectTarget;
   x: number;
   y: number;
+};
+
+type HoverSnapPoint = {
+  point: GraphPoint;
+  target: ObjectTarget;
 };
 
 type DragState = {
@@ -89,6 +65,9 @@ type DragState = {
   startY: number;
   lastX: number;
   lastY: number;
+  lastMoveTime: number;
+  velocityX: number;
+  velocityY: number;
   moved: boolean;
   mode: "none" | "pan" | "handle" | "object" | "draw-line" | "draw-shape" | "draw-measure";
   startWorld: GraphPoint;
@@ -104,6 +83,10 @@ const START_VIEW: ViewState = {
   pixelsPerUnit: 64,
 };
 
+const MIN_ZOOM = 12;
+const MAX_ZOOM = 480;
+const ZOOM_BUTTON_STEP = 1;
+const WHEEL_ZOOM_PX_PER_DELTA = 0.01;
 const SNAP_STEPS = [1, 0.5, 0.25, 0.1, 0.05, 0.01];
 const COLOR_SWATCHES = ["#28666e", "#7a4f9a", "#d94f30", "#2f8f5b", "#c28a16", "#24211e"];
 const SUBGRID_STEP = 0.25;
@@ -115,6 +98,10 @@ const MAX_SIDEBAR_WIDTH = 520;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const getCanvasDpr = () => Math.min(3, Math.max(2, window.devicePixelRatio || 1));
+
+const crispLine = (value: number) => Math.round(value) + 0.5;
 
 const roundCoordinate = (value: number) => {
   if (Math.abs(value) < 0.000001) return 0;
@@ -153,12 +140,19 @@ const cloneSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
     a: clonePoint(measure.a),
     b: clonePoint(measure.b),
   })),
+  dataPlots: snapshot.dataPlots.map((plot) => ({
+    ...plot,
+    values: plot.values.map((value) => ({ ...value })),
+  })),
 });
 
 const App = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const panFrameRef = useRef<number | null>(null);
+  const pendingPanRef = useRef({ dx: 0, dy: 0 });
+  const inertiaFrameRef = useRef<number | null>(null);
   const undoStack = useRef<GraphSnapshot[]>([]);
   const redoStack = useRef<GraphSnapshot[]>([]);
   const nextPointId = useRef(1);
@@ -166,6 +160,7 @@ const App = () => {
   const nextCurveId = useRef(1);
   const nextShapeId = useRef(1);
   const nextMeasureId = useRef(1);
+  const nextDataPlotId = useRef(1);
 
   const [view, setView] = useState<ViewState>(START_VIEW);
   const [points, setPoints] = useState<GraphPoint[]>([]);
@@ -173,6 +168,7 @@ const App = () => {
   const [curves, setCurves] = useState<GraphCurve[]>([]);
   const [shapes, setShapes] = useState<GraphShape[]>([]);
   const [measures, setMeasures] = useState<GraphMeasure[]>([]);
+  const [dataPlots, setDataPlots] = useState<DataPlot[]>([]);
   const [draftPoints, setDraftPoints] = useState<GraphPoint[]>([]);
   const [tool, setTool] = useState<Tool>("plot");
   const [selectedColor, setSelectedColor] = useState(COLOR_SWATCHES[0]);
@@ -182,9 +178,15 @@ const App = () => {
   const [cursor, setCursor] = useState<GraphPoint | null>(null);
   const [manualX, setManualX] = useState("");
   const [manualY, setManualY] = useState("");
+  const [dataName, setDataName] = useState("Data set");
+  const [dataInput, setDataInput] = useState("0, 0\n1, 1\n2, 4\n3, 9");
+  const [dataPlotStyle, setDataPlotStyle] = useState<DataPlotStyle>("scatter");
+  const [dataError, setDataError] = useState("");
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedObject, setSelectedObject] = useState<ObjectTarget | null>(null);
   const [hoverMenu, setHoverMenu] = useState<HoverMenu | null>(null);
+  const [hoverSnapPoint, setHoverSnapPoint] = useState<HoverSnapPoint | null>(null);
+  const [calculatorGuide, setCalculatorGuide] = useState<CalculatorGuide | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -202,6 +204,7 @@ const App = () => {
       curves,
       shapes,
       measures,
+      dataPlots,
     });
 
   const restoreGraphSnapshot = (snapshot: GraphSnapshot) => {
@@ -211,6 +214,7 @@ const App = () => {
     setCurves(next.curves);
     setShapes(next.shapes);
     setMeasures(next.measures);
+    setDataPlots(next.dataPlots);
     setDraftPoints([]);
     setSelectedObject(null);
   };
@@ -242,6 +246,7 @@ const App = () => {
 
   const canUndo = historyVersion >= 0 && undoStack.current.length > 0;
   const canRedo = historyVersion >= 0 && redoStack.current.length > 0;
+  const zoomPercent = `${((view.pixelsPerUnit - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)) * 100}%`;
 
   const screenToWorld = (screenX: number, screenY: number, currentView = view) => {
     const canvas = canvasRef.current;
@@ -498,6 +503,14 @@ const App = () => {
     };
 
     points.forEach((point) => testPoint(point, { kind: "point", id: point.id }));
+    dataPlots.forEach((plot) => {
+      plot.values.forEach((value, pointIndex) => {
+        testPoint(
+          { id: 0, x: value.x, y: value.y },
+          { kind: "data", id: plot.id, pointIndex }
+        );
+      });
+    });
     lines.forEach((line) => {
       testPoint(line.a, { kind: "line", id: line.id, handle: "a" });
       testPoint(line.b, { kind: "line", id: line.id, handle: "b" });
@@ -539,8 +552,23 @@ const App = () => {
     };
 
     lines.forEach((line) => {
+      const parts = getLineParts(line);
+      if (parts.vertical) {
+        choose(Math.abs(local.x - worldToCanvas({ id: 0, x: parts.x, y: 0 }).x), {
+          kind: "line",
+          id: line.id,
+        });
+        return;
+      }
+
+      const leftWorldX = screenToWorld(rect.left, screenY).x;
+      const rightWorldX = screenToWorld(rect.right, screenY).x;
       choose(
-        distanceToSegment(local, worldToCanvas(line.a), worldToCanvas(line.b)),
+        distanceToSegment(
+          local,
+          worldToCanvas({ id: 0, x: leftWorldX, y: parts.m * leftWorldX + parts.b }),
+          worldToCanvas({ id: 0, x: rightWorldX, y: parts.m * rightWorldX + parts.b })
+        ),
         { kind: "line", id: line.id }
       );
     });
@@ -616,6 +644,79 @@ const App = () => {
     return nearestTarget;
   };
 
+  const findNearestPointOnObject = (
+    screenX: number,
+    screenY: number
+  ): HoverSnapPoint | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const local = { x: screenX - rect.left, y: screenY - rect.top };
+    const hitRadius = 14;
+    const world = screenToWorld(screenX, screenY);
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    let nearest: HoverSnapPoint | null = null;
+
+    const choose = (point: GraphPoint, target: ObjectTarget) => {
+      const screen = worldToCanvas(point);
+      const distance = Math.hypot(screen.x - local.x, screen.y - local.y);
+      if (distance <= hitRadius && distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = {
+          point: {
+            id: 0,
+            x: roundCoordinate(point.x),
+            y: roundCoordinate(point.y),
+          },
+          target,
+        };
+      }
+    };
+
+    lines.forEach((line) => {
+      const parts = getLineParts(line);
+      const point = parts.vertical
+        ? { id: 0, x: parts.x, y: world.y }
+        : { id: 0, x: world.x, y: parts.m * world.x + parts.b };
+      choose(point, { kind: "line", id: line.id });
+    });
+
+    curves.forEach((curve) => {
+      const coefficients = getQuadraticCoefficients(curve);
+      if (!coefficients) return;
+      choose(
+        {
+          id: 0,
+          x: world.x,
+          y: coefficients.a * world.x ** 2 + coefficients.b * world.x + coefficients.c,
+        },
+        { kind: "curve", id: curve.id }
+      );
+    });
+
+    measures.forEach((measure) => {
+      const closest = closestPointOnSegmentWorld(world, measure.a, measure.b);
+      choose(closest, { kind: "measure", id: measure.id });
+    });
+
+    shapes.forEach((shape) => {
+      const bounds = getShapeBounds(shape);
+      const left = bounds.x;
+      const right = bounds.x + bounds.width;
+      const bottom = bounds.y;
+      const top = bounds.y + bounds.height;
+      const candidates = [
+        { id: 0, x: clamp(world.x, left, right), y: top },
+        { id: 0, x: clamp(world.x, left, right), y: bottom },
+        { id: 0, x: left, y: clamp(world.y, bottom, top) },
+        { id: 0, x: right, y: clamp(world.y, bottom, top) },
+      ];
+      candidates.forEach((point) => choose(point, { kind: "shape", id: shape.id }));
+    });
+
+    return nearest;
+  };
+
   const moveHandle = (target: HandleTarget, nextPoint: GraphPoint) => {
     if (target.kind === "point") {
       setPoints((current) =>
@@ -643,6 +744,24 @@ const App = () => {
           measure.id === target.id
             ? { ...measure, [target.handle]: { ...measure[target.handle], ...nextPoint } }
             : measure
+        )
+      );
+      return;
+    }
+
+    if (target.kind === "data") {
+      setDataPlots((current) =>
+        current.map((plot) =>
+          plot.id === target.id
+            ? {
+                ...plot,
+                values: plot.values.map((value, index) =>
+                  index === target.pointIndex
+                    ? { x: nextPoint.x, y: nextPoint.y }
+                    : value
+                ),
+              }
+            : plot
         )
       );
       return;
@@ -879,6 +998,8 @@ const App = () => {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const target = findNearestObject(screenX, screenY);
+    const snapPointOnObject = findNearestPointOnObject(screenX, screenY);
+    setHoverSnapPoint(snapPointOnObject);
     if (!target) {
       if (!selectedObject) setHoverMenu(null);
       return;
@@ -900,6 +1021,77 @@ const App = () => {
     setManualY("");
   };
 
+  const addDataPlot = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const parsed = parseDataValues(dataInput);
+    if (!parsed.ok) {
+      setDataError(parsed.message);
+      return;
+    }
+
+    pushHistory();
+    const plotName = dataName.trim() || `Data set ${nextDataPlotId.current}`;
+    setDataPlots((current) => [
+      ...current,
+      {
+        id: nextDataPlotId.current++,
+        name: plotName,
+        values: parsed.values,
+        color: selectedColor,
+        style: dataPlotStyle,
+      },
+    ]);
+    fitViewToValues(parsed.values);
+    setDataError("");
+  };
+
+  const importDataFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    file
+      .text()
+      .then((text) => {
+        setDataInput(text);
+        setDataName(file.name.replace(/\.[^.]+$/, "") || "Data set");
+        setDataError("");
+      })
+      .catch(() => {
+        setDataError("Could not read that file.");
+      });
+    event.target.value = "";
+  };
+
+  const fitViewToValues = (values: DataValue[]) => {
+    if (values.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const xs = values.map((value) => value.x);
+    const ys = values.map((value) => value.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const spanX = Math.max(1, maxX - minX);
+    const spanY = Math.max(1, maxY - minY);
+    const padding = 96;
+    const nextPixelsPerUnit = clamp(
+      Math.min(
+        (rect.width - padding) / spanX,
+        (rect.height - padding) / spanY
+      ),
+      MIN_ZOOM,
+      MAX_ZOOM
+    );
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    setView({
+      pixelsPerUnit: nextPixelsPerUnit,
+      offsetX: -centerX * nextPixelsPerUnit,
+      offsetY: centerY * nextPixelsPerUnit,
+    });
+  };
+
   const zoomAt = (screenX: number, screenY: number, zoomFactor: number) => {
     setView((current) => {
       const canvas = canvasRef.current;
@@ -909,8 +1101,8 @@ const App = () => {
       const before = screenToWorld(screenX, screenY, current);
       const nextPixelsPerUnit = clamp(
         current.pixelsPerUnit * zoomFactor,
-        12,
-        480
+        MIN_ZOOM,
+        MAX_ZOOM
       );
       const nextCenterX = screenX - rect.left - before.x * nextPixelsPerUnit;
       const nextCenterY = screenY - rect.top + before.y * nextPixelsPerUnit;
@@ -923,6 +1115,121 @@ const App = () => {
     });
   };
 
+  const zoomTo = (screenX: number, screenY: number, nextPixelsPerUnit: number) => {
+    setView((current) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return current;
+
+      const rect = canvas.getBoundingClientRect();
+      const before = screenToWorld(screenX, screenY, current);
+      const clampedPixelsPerUnit = clamp(nextPixelsPerUnit, MIN_ZOOM, MAX_ZOOM);
+      const nextCenterX = screenX - rect.left - before.x * clampedPixelsPerUnit;
+      const nextCenterY = screenY - rect.top + before.y * clampedPixelsPerUnit;
+
+      return {
+        pixelsPerUnit: clampedPixelsPerUnit,
+        offsetX: nextCenterX - rect.width / 2,
+        offsetY: nextCenterY - rect.height / 2,
+      };
+    });
+  };
+
+  const setZoomAtCanvasCenter = (nextPixelsPerUnit: number) => {
+    setView((current) => {
+      const canvas = canvasRef.current;
+      const clampedPixelsPerUnit = clamp(nextPixelsPerUnit, MIN_ZOOM, MAX_ZOOM);
+      if (!canvas) {
+        return {
+          ...current,
+          pixelsPerUnit: clampedPixelsPerUnit,
+        };
+      }
+
+      const centerWorld = {
+        x: -current.offsetX / current.pixelsPerUnit,
+        y: current.offsetY / current.pixelsPerUnit,
+      };
+
+      return {
+        pixelsPerUnit: clampedPixelsPerUnit,
+        offsetX: -centerWorld.x * clampedPixelsPerUnit,
+        offsetY: centerWorld.y * clampedPixelsPerUnit,
+      };
+    });
+  };
+
+  const zoomCanvasCenterBy = (zoomDelta: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      setView((current) => ({
+        ...current,
+        pixelsPerUnit: clamp(current.pixelsPerUnit + zoomDelta, MIN_ZOOM, MAX_ZOOM),
+      }));
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    zoomTo(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+      view.pixelsPerUnit + zoomDelta
+    );
+  };
+
+  const queuePanBy = (dx: number, dy: number) => {
+    pendingPanRef.current.dx += dx;
+    pendingPanRef.current.dy += dy;
+    if (panFrameRef.current !== null) return;
+
+    panFrameRef.current = requestAnimationFrame(() => {
+      panFrameRef.current = null;
+      const pending = pendingPanRef.current;
+      pendingPanRef.current = { dx: 0, dy: 0 };
+      if (Math.abs(pending.dx) < 0.001 && Math.abs(pending.dy) < 0.001) return;
+
+      setView((current) => ({
+        ...current,
+        offsetX: current.offsetX + pending.dx,
+        offsetY: current.offsetY + pending.dy,
+      }));
+    });
+  };
+
+  const stopPanInertia = () => {
+    if (inertiaFrameRef.current !== null) {
+      cancelAnimationFrame(inertiaFrameRef.current);
+      inertiaFrameRef.current = null;
+    }
+  };
+
+  const startPanInertia = (velocityX: number, velocityY: number) => {
+    stopPanInertia();
+    const maxVelocity = 2.4;
+    let vx = clamp(velocityX, -maxVelocity, maxVelocity);
+    let vy = clamp(velocityY, -maxVelocity, maxVelocity);
+    let previousTime = performance.now();
+
+    const step = (time: number) => {
+      const dt = Math.min(32, time - previousTime);
+      previousTime = time;
+      queuePanBy(vx * dt, vy * dt);
+      const friction = 0.90 ** (dt / 16.67);
+      vx *= friction;
+      vy *= friction;
+
+      if (Math.hypot(vx, vy) < 0.015) {
+        inertiaFrameRef.current = null;
+        return;
+      }
+
+      inertiaFrameRef.current = requestAnimationFrame(step);
+    };
+
+    if (Math.hypot(vx, vy) >= 0.08) {
+      inertiaFrameRef.current = requestAnimationFrame(step);
+    }
+  };
+
   const updateCursor = (screenX: number, screenY: number) => {
     const world = snapPoint(screenToWorld(screenX, screenY));
     setCursor({
@@ -933,13 +1240,17 @@ const App = () => {
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
+    stopPanInertia();
     event.currentTarget.setPointerCapture(event.pointerId);
-    const isPanGesture = tool === "pan" || (event.buttons & 6) !== 0;
-    const rawTarget = !isPanGesture ? findNearestHandle(event.clientX, event.clientY) : null;
+    const isAuxiliaryPanGesture = (event.buttons & 6) !== 0;
+    const rawTarget =
+      !isAuxiliaryPanGesture
+        ? findNearestHandle(event.clientX, event.clientY)
+        : null;
     const isMeasuringFromPlottedPoint = tool === "measure" && rawTarget?.kind === "point";
     const target = isMeasuringFromPlottedPoint ? null : rawTarget;
     const objectTarget =
-      !isPanGesture && !target && !isMeasuringFromPlottedPoint
+      !isAuxiliaryPanGesture && !target && !isMeasuringFromPlottedPoint
         ? findNearestObject(event.clientX, event.clientY)
         : null;
     const startWorld =
@@ -949,12 +1260,12 @@ const App = () => {
             id: 0,
             ...snapPoint(screenToWorld(event.clientX, event.clientY)),
           };
-    if (target && target.kind !== "point") {
+    if (target && target.kind !== "point" && target.kind !== "data") {
       setSelectedObject({ kind: target.kind, id: target.id });
     } else {
       setSelectedObject(objectTarget);
     }
-    if (objectTarget || (target && target.kind !== "point")) {
+    if (objectTarget || (target && target.kind !== "point" && target.kind !== "data")) {
       const rect = event.currentTarget.getBoundingClientRect();
       setHoverMenu({
         target:
@@ -970,8 +1281,17 @@ const App = () => {
       startY: event.clientY,
       lastX: event.clientX,
       lastY: event.clientY,
+      lastMoveTime: event.timeStamp,
+      velocityX: 0,
+      velocityY: 0,
       moved: false,
-      mode: target ? "handle" : objectTarget ? "object" : isPanGesture ? "pan" : "none",
+      mode: target
+        ? "handle"
+        : objectTarget && tool !== "plot"
+          ? "object"
+          : isAuxiliaryPanGesture
+            ? "pan"
+            : "none",
       startWorld: { id: 0, x: startWorld.x, y: startWorld.y },
       historySnapshot: target || objectTarget ? getGraphSnapshot() : undefined,
       historyPushed: false,
@@ -982,12 +1302,20 @@ const App = () => {
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
-    updateCursor(event.clientX, event.clientY);
-
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) {
+      updateCursor(event.clientX, event.clientY);
       updateHoverMenu(event.clientX, event.clientY);
       return;
+    }
+
+    if (drag.mode !== "pan") {
+      updateCursor(event.clientX, event.clientY);
+      if (drag.mode === "none") {
+        setHoverSnapPoint(findNearestPointOnObject(event.clientX, event.clientY));
+      } else {
+        setHoverSnapPoint(null);
+      }
     }
 
     const dx = event.clientX - drag.lastX;
@@ -1039,6 +1367,7 @@ const App = () => {
 
     if (drag.mode === "object" && drag.objectTarget) {
       setHoverMenu(null);
+      setHoverSnapPoint(null);
       if (!drag.historyPushed && drag.historySnapshot) {
         pushHistory(drag.historySnapshot);
         drag.historyPushed = true;
@@ -1075,11 +1404,13 @@ const App = () => {
     }
 
     if (drag.mode === "pan") {
-      setView((current) => ({
-        ...current,
-        offsetX: current.offsetX + dx,
-        offsetY: current.offsetY + dy,
-      }));
+      const dt = Math.max(1, event.timeStamp - drag.lastMoveTime);
+      const nextVelocityX = dx / dt;
+      const nextVelocityY = dy / dt;
+      drag.velocityX = drag.velocityX * 0.65 + nextVelocityX * 0.35;
+      drag.velocityY = drag.velocityY * 0.65 + nextVelocityY * 0.35;
+      drag.lastMoveTime = event.timeStamp;
+      queuePanBy(dx, dy);
     }
 
     drag.lastX = event.clientX;
@@ -1088,6 +1419,12 @@ const App = () => {
 
   const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+    if (drag && drag.pointerId === event.pointerId && drag.mode === "pan") {
+      startPanInertia(drag.velocityX, drag.velocityY);
+      dragRef.current = null;
+      return;
+    }
+
     if (drag && drag.pointerId === event.pointerId && drag.mode === "draw-line") {
       const endWorld = snapPoint(screenToWorld(event.clientX, event.clientY));
       addLineFromPoints(drag.startWorld, { id: 0, x: endWorld.x, y: endWorld.y });
@@ -1118,7 +1455,14 @@ const App = () => {
 
     if (drag && drag.pointerId === event.pointerId && drag.mode === "none" && !drag.moved) {
       if (tool === "plot") {
-        addPoint(event.clientX, event.clientY);
+        const pointOnObject = drag.objectTarget
+          ? findNearestPointOnObject(event.clientX, event.clientY)
+          : null;
+        if (pointOnObject) {
+          addWorldPoint(pointOnObject.point.x, pointOnObject.point.y);
+        } else {
+          addPoint(event.clientX, event.clientY);
+        }
       }
       if (tool === "line" || tool === "curve" || tool === "rectangle" || tool === "square" || tool === "measure") {
         addDraftGeometryPoint(event.clientX, event.clientY);
@@ -1129,8 +1473,11 @@ const App = () => {
 
   const handleWheel = (event: WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
-    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-    zoomAt(event.clientX, event.clientY, zoomFactor);
+    zoomTo(
+      event.clientX,
+      event.clientY,
+      view.pixelsPerUnit - event.deltaY * WHEEL_ZOOM_PX_PER_DELTA
+    );
   };
 
   useEffect(() => {
@@ -1199,7 +1546,7 @@ const App = () => {
 
     const resizeCanvas = () => {
       const rect = wrapper.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = getCanvasDpr();
       setCanvasSize({ width: rect.width, height: rect.height });
       canvas.width = Math.round(rect.width * dpr);
       canvas.height = Math.round(rect.height * dpr);
@@ -1211,6 +1558,9 @@ const App = () => {
         curves,
         shapes,
         measures,
+        dataPlots,
+        hoverSnapPoint,
+        calculatorGuide,
         draftPoints,
         cursor,
         connectPoints,
@@ -1224,7 +1574,7 @@ const App = () => {
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [connectPoints, cursor, curves, draftPoints, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
+  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1235,6 +1585,9 @@ const App = () => {
         curves,
         shapes,
         measures,
+        dataPlots,
+        hoverSnapPoint,
+        calculatorGuide,
         draftPoints,
         cursor,
         connectPoints,
@@ -1243,7 +1596,19 @@ const App = () => {
         selectedObject,
       });
     }
-  }, [connectPoints, cursor, curves, draftPoints, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
+  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
+
+  useEffect(
+    () => () => {
+      if (panFrameRef.current !== null) {
+        cancelAnimationFrame(panFrameRef.current);
+      }
+      if (inertiaFrameRef.current !== null) {
+        cancelAnimationFrame(inertiaFrameRef.current);
+      }
+    },
+    []
+  );
 
   const getCanvasPoint = (point: GraphPoint) => ({
     x: canvasSize.width / 2 + view.offsetX + point.x * view.pixelsPerUnit,
@@ -1258,10 +1623,53 @@ const App = () => {
   const shouldShowOverlay = (
     target: ObjectTarget,
     showLabel: boolean
-  ) =>
-    showLabel ||
-    isOverlayActive(target) ||
-    isSelectedObject(hoverMenu?.target ?? null, target.kind, target.id);
+  ) => showLabel;
+  const formatObjectForCalculator = (target: ObjectTarget) => {
+    if (target.kind === "line") {
+      const line = lines.find((item) => item.id === target.id);
+      return line ? formatLineEquation(line) : "Line";
+    }
+    if (target.kind === "curve") {
+      const curve = curves.find((item) => item.id === target.id);
+      return curve ? formatCurveEquation(curve) : "Curve";
+    }
+    if (target.kind === "shape") {
+      const shape = shapes.find((item) => item.id === target.id);
+      return shape ? formatShapeLabel(shape) : "Shape";
+    }
+    const measure = measures.find((item) => item.id === target.id);
+    return measure ? formatMeasureLabel(measure) : "Distance";
+  };
+  const selectedCalculatorObject =
+    selectedObject?.kind === "line"
+      ? {
+          kind: "line" as const,
+          value: lines.find((line) => line.id === selectedObject.id)!,
+        }
+      : selectedObject?.kind === "curve"
+        ? {
+            kind: "curve" as const,
+            value: curves.find((curve) => curve.id === selectedObject.id)!,
+          }
+        : selectedObject?.kind === "shape"
+          ? {
+              kind: "shape" as const,
+              value: shapes.find((shape) => shape.id === selectedObject.id)!,
+            }
+          : selectedObject?.kind === "measure"
+            ? {
+                kind: "measure" as const,
+                value: measures.find((measure) => measure.id === selectedObject.id)!,
+              }
+            : null;
+  const calculatorContext = {
+    points,
+    dataPlots,
+    selected:
+      selectedCalculatorObject?.value === undefined ? null : selectedCalculatorObject,
+    selectedTarget: selectedObject,
+    formatObject: formatObjectForCalculator,
+  };
 
   return (
     <main
@@ -1369,28 +1777,6 @@ const App = () => {
             <button type="button" onClick={() => setView(START_VIEW)}>
               Reset
             </button>
-            <button
-              type="button"
-              onClick={() =>
-                setView((current) => ({
-                  ...current,
-                  pixelsPerUnit: clamp(current.pixelsPerUnit * 1.2, 12, 480),
-                }))
-              }
-            >
-              Zoom In
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                setView((current) => ({
-                  ...current,
-                  pixelsPerUnit: clamp(current.pixelsPerUnit / 1.2, 12, 480),
-                }))
-              }
-            >
-              Zoom Out
-            </button>
           </div>
           <div className="history-row">
             <button disabled={!canUndo} onClick={undo} type="button">
@@ -1401,20 +1787,35 @@ const App = () => {
             </button>
           </div>
 
-          <label className="field">
+          <label className="field zoom-field">
             <span>Scale</span>
-            <input
-              max="480"
-              min="12"
-              onChange={(event) =>
-                setView((current) => ({
-                  ...current,
-                  pixelsPerUnit: clamp(Number(event.target.value), 12, 480),
-                }))
-              }
-              type="range"
-              value={view.pixelsPerUnit}
-            />
+            <div className="zoom-control">
+              <button
+                aria-label="Zoom out"
+                onClick={() => zoomCanvasCenterBy(-ZOOM_BUTTON_STEP)}
+                type="button"
+              >
+                -
+              </button>
+              <input
+                max={MAX_ZOOM}
+                min={MIN_ZOOM}
+                onChange={(event) =>
+                  setZoomAtCanvasCenter(Number(event.target.value))
+                }
+                step="1"
+                style={{ "--zoom-percent": zoomPercent } as CSSProperties}
+                type="range"
+                value={view.pixelsPerUnit}
+              />
+              <button
+                aria-label="Zoom in"
+                onClick={() => zoomCanvasCenterBy(ZOOM_BUTTON_STEP)}
+                type="button"
+              >
+                +
+              </button>
+            </div>
           </label>
 
           <div className="stats">
@@ -1518,6 +1919,123 @@ const App = () => {
         </section>
 
         <section className="control-section">
+          <h2>Data</h2>
+          <form className="data-form" onSubmit={addDataPlot}>
+            <label className="field">
+              <span>Name</span>
+              <input
+                onChange={(event) => setDataName(event.target.value)}
+                type="text"
+                value={dataName}
+              />
+            </label>
+            <label className="field">
+              <span>Plot type</span>
+              <select
+                onChange={(event) =>
+                  setDataPlotStyle(event.target.value as DataPlotStyle)
+                }
+                value={dataPlotStyle}
+              >
+                <option value="scatter">Scatter</option>
+                <option value="line">Line</option>
+                <option value="scatter-line">Connected points</option>
+                <option value="bar">Bar</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Values</span>
+              <textarea
+                className="data-textarea"
+                onChange={(event) => setDataInput(event.target.value)}
+                spellCheck={false}
+                value={dataInput}
+              />
+            </label>
+            <label className="file-import">
+              <span>Import CSV / TXT / JSON</span>
+              <input
+                accept=".csv,.txt,.tsv,.json"
+                onChange={importDataFile}
+                type="file"
+              />
+            </label>
+            {dataError ? <p className="form-error">{dataError}</p> : null}
+            <div className="data-actions">
+              <button type="submit">Generate plot</button>
+              <button
+                className="danger"
+                disabled={dataPlots.length === 0}
+                onClick={() => {
+                  if (dataPlots.length === 0) return;
+                  pushHistory();
+                  setDataPlots([]);
+                }}
+                type="button"
+              >
+                Clear data
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="control-section">
+          <h2>Data sets</h2>
+          <div className="equation-list">
+            {dataPlots.length === 0 ? (
+              <p className="empty-state">Generate a plot from pasted values.</p>
+            ) : (
+              dataPlots.map((plot, index) => (
+                <div className="equation-row" key={plot.id}>
+                  <span>DS{index + 1}</span>
+                  <code>
+                    {plot.name}: {plot.values.length} points
+                  </code>
+                  <button
+                    aria-label={
+                      plot.style === "scatter-line"
+                        ? `Disconnect data plot ${index + 1}`
+                        : `Connect data plot ${index + 1}`
+                    }
+                    onClick={() => {
+                      pushHistory();
+                      setDataPlots((current) =>
+                        current.map((item) =>
+                          item.id === plot.id
+                            ? {
+                                ...item,
+                                style:
+                                  item.style === "scatter-line"
+                                    ? "scatter"
+                                    : "scatter-line",
+                              }
+                            : item
+                        )
+                      );
+                    }}
+                    type="button"
+                  >
+                    {plot.style === "scatter-line" ? "un" : "ln"}
+                  </button>
+                  <button
+                    aria-label={`Delete data plot ${index + 1}`}
+                    onClick={() => {
+                      pushHistory();
+                      setDataPlots((current) =>
+                        current.filter((item) => item.id !== plot.id)
+                      );
+                    }}
+                    type="button"
+                  >
+                    x
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="control-section">
           <h2>Equations</h2>
           <div className="equation-list">
             {lines.length === 0 && curves.length === 0 && shapes.length === 0 && measures.length === 0 ? (
@@ -1527,12 +2045,53 @@ const App = () => {
             ) : (
               <>
                 {lines.map((line, index) => (
-                  <div className="equation-row" key={`line-${line.id}`}>
+                  <div
+                    className={
+                      isSelectedObject(selectedObject, "line", line.id)
+                        ? "equation-row selected"
+                        : "equation-row"
+                    }
+                    key={`line-${line.id}`}
+                    onClick={() => setSelectedObject({ kind: "line", id: line.id })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        setSelectedObject({ kind: "line", id: line.id });
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    {(() => {
+                      const target: ObjectTarget = { kind: "line", id: line.id };
+                      return (
+                        <>
                     <span>L{index + 1}</span>
                     <code>{formatLineEquation(line)}</code>
                     <button
+                      aria-label={
+                        line.showLabel
+                          ? `Hide line ${index + 1} label`
+                          : `Show line ${index + 1} label`
+                      }
+                      className={
+                        line.showLabel
+                          ? "equation-label-toggle active"
+                          : "equation-label-toggle"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateLabelVisibility(target, !line.showLabel);
+                        if (!line.showLabel) setSelectedObject(target);
+                      }}
+                      title={line.showLabel ? "Hide label" : "Show label"}
+                      type="button"
+                    >
+                      {line.showLabel ? "-" : "+"}
+                    </button>
+                    <button
                       aria-label={`Delete line ${index + 1}`}
-                      onClick={() => {
+                      onClick={(event) => {
+                        event.stopPropagation();
                         pushHistory();
                         setLines((current) =>
                           current.filter((item) => item.id !== line.id)
@@ -1542,15 +2101,59 @@ const App = () => {
                     >
                       x
                     </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
                 {curves.map((curve, index) => (
-                  <div className="equation-row" key={`curve-${curve.id}`}>
+                  <div
+                    className={
+                      isSelectedObject(selectedObject, "curve", curve.id)
+                        ? "equation-row selected"
+                        : "equation-row"
+                    }
+                    key={`curve-${curve.id}`}
+                    onClick={() => setSelectedObject({ kind: "curve", id: curve.id })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        setSelectedObject({ kind: "curve", id: curve.id });
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    {(() => {
+                      const target: ObjectTarget = { kind: "curve", id: curve.id };
+                      return (
+                        <>
                     <span>C{index + 1}</span>
                     <code>{formatCurveEquation(curve)}</code>
                     <button
+                      aria-label={
+                        curve.showLabel
+                          ? `Hide curve ${index + 1} label`
+                          : `Show curve ${index + 1} label`
+                      }
+                      className={
+                        curve.showLabel
+                          ? "equation-label-toggle active"
+                          : "equation-label-toggle"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateLabelVisibility(target, !curve.showLabel);
+                        if (!curve.showLabel) setSelectedObject(target);
+                      }}
+                      title={curve.showLabel ? "Hide label" : "Show label"}
+                      type="button"
+                    >
+                      {curve.showLabel ? "-" : "+"}
+                    </button>
+                    <button
                       aria-label={`Delete curve ${index + 1}`}
-                      onClick={() => {
+                      onClick={(event) => {
+                        event.stopPropagation();
                         pushHistory();
                         setCurves((current) =>
                           current.filter((item) => item.id !== curve.id)
@@ -1560,15 +2163,59 @@ const App = () => {
                     >
                       x
                     </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
                 {shapes.map((shape, index) => (
-                  <div className="equation-row" key={`shape-${shape.id}`}>
+                  <div
+                    className={
+                      isSelectedObject(selectedObject, "shape", shape.id)
+                        ? "equation-row selected"
+                        : "equation-row"
+                    }
+                    key={`shape-${shape.id}`}
+                    onClick={() => setSelectedObject({ kind: "shape", id: shape.id })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        setSelectedObject({ kind: "shape", id: shape.id });
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    {(() => {
+                      const target: ObjectTarget = { kind: "shape", id: shape.id };
+                      return (
+                        <>
                     <span>S{index + 1}</span>
                     <code>{formatShapeLabel(shape)}</code>
                     <button
+                      aria-label={
+                        shape.showLabel
+                          ? `Hide shape ${index + 1} label`
+                          : `Show shape ${index + 1} label`
+                      }
+                      className={
+                        shape.showLabel
+                          ? "equation-label-toggle active"
+                          : "equation-label-toggle"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateLabelVisibility(target, !shape.showLabel);
+                        if (!shape.showLabel) setSelectedObject(target);
+                      }}
+                      title={shape.showLabel ? "Hide label" : "Show label"}
+                      type="button"
+                    >
+                      {shape.showLabel ? "-" : "+"}
+                    </button>
+                    <button
                       aria-label={`Delete shape ${index + 1}`}
-                      onClick={() => {
+                      onClick={(event) => {
+                        event.stopPropagation();
                         pushHistory();
                         setShapes((current) =>
                           current.filter((item) => item.id !== shape.id)
@@ -1578,15 +2225,59 @@ const App = () => {
                     >
                       x
                     </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
                 {measures.map((measure, index) => (
-                  <div className="equation-row" key={`measure-${measure.id}`}>
+                  <div
+                    className={
+                      isSelectedObject(selectedObject, "measure", measure.id)
+                        ? "equation-row selected"
+                        : "equation-row"
+                    }
+                    key={`measure-${measure.id}`}
+                    onClick={() => setSelectedObject({ kind: "measure", id: measure.id })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        setSelectedObject({ kind: "measure", id: measure.id });
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    {(() => {
+                      const target: ObjectTarget = { kind: "measure", id: measure.id };
+                      return (
+                        <>
                     <span>D{index + 1}</span>
                     <code>{formatMeasureLabel(measure)}</code>
                     <button
+                      aria-label={
+                        measure.showLabel
+                          ? `Hide distance marker ${index + 1} label`
+                          : `Show distance marker ${index + 1} label`
+                      }
+                      className={
+                        measure.showLabel
+                          ? "equation-label-toggle active"
+                          : "equation-label-toggle"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateLabelVisibility(target, !measure.showLabel);
+                        if (!measure.showLabel) setSelectedObject(target);
+                      }}
+                      title={measure.showLabel ? "Hide label" : "Show label"}
+                      type="button"
+                    >
+                      {measure.showLabel ? "-" : "+"}
+                    </button>
+                    <button
                       aria-label={`Delete distance marker ${index + 1}`}
-                      onClick={() => {
+                      onClick={(event) => {
+                        event.stopPropagation();
                         pushHistory();
                         setMeasures((current) =>
                           current.filter((item) => item.id !== measure.id)
@@ -1596,6 +2287,9 @@ const App = () => {
                     >
                       x
                     </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
               </>
@@ -1671,7 +2365,10 @@ const App = () => {
             aria-label="Interactive graph canvas"
             className={tool === "pan" ? "graph-canvas pan-mode" : "graph-canvas"}
             onPointerDown={handlePointerDown}
-            onPointerLeave={() => setCursor(null)}
+            onPointerLeave={() => {
+              setCursor(null);
+              setHoverSnapPoint(null);
+            }}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onContextMenu={(event) => event.preventDefault()}
@@ -1780,6 +2477,10 @@ const App = () => {
           })}
         </div>
       </section>
+      <ScientificCalculator
+        context={calculatorContext}
+        onGuideChange={setCalculatorGuide}
+      />
     </main>
   );
 };
@@ -1790,10 +2491,10 @@ const getLabelStep = (pixelsPerUnit: number) => {
 };
 
 const getGridStroke = (index: number) => {
-  if (index % 20 === 0) return "#b6ab9d";
-  if (index % 4 === 0) return "#c9c1b5";
-  if (index % 2 === 0) return "#d8d0c5";
-  return "#e7e1d9";
+  if (index % 20 === 0) return "#777777";
+  if (index % 4 === 0) return "#9a9a9a";
+  if (index % 2 === 0) return "#b8b8b8";
+  return "#dedede";
 };
 
 const getToolTitle = (tool: Tool) => {
@@ -1835,7 +2536,7 @@ const getToolHelp = (tool: Tool, draftCount: number) => {
       ? "Click two points, or hold and drag to draw a dotted distance marker."
       : "Click the second point to finish the distance marker.";
   }
-  return "Drag the board to move around. Use the wheel to zoom.";
+  return "Left click objects to select and edit. Right click drag to move around.";
 };
 
 const formatNumber = (value: number) => {
@@ -2197,6 +2898,9 @@ const drawGraph = (
     curves: GraphCurve[];
     shapes: GraphShape[];
     measures: GraphMeasure[];
+    dataPlots: DataPlot[];
+    hoverSnapPoint: HoverSnapPoint | null;
+    calculatorGuide: CalculatorGuide | null;
     draftPoints: GraphPoint[];
     cursor: GraphPoint | null;
     connectPoints: boolean;
@@ -2208,13 +2912,15 @@ const drawGraph = (
   const context = canvas.getContext("2d");
   if (!context) return;
 
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = getCanvasDpr();
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
 
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
   context.clearRect(0, 0, width, height);
-  context.fillStyle = "#f7f4ef";
+  context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
 
   const originX = width / 2 + view.offsetX;
@@ -2246,7 +2952,7 @@ const drawGraph = (
 
   for (let index = startXIndex; index <= endXIndex; index += 1) {
     const x = index * gridStep;
-    const screenX = originX + x * view.pixelsPerUnit;
+    const screenX = crispLine(originX + x * view.pixelsPerUnit);
     context.beginPath();
     context.strokeStyle = getGridStroke(index);
     context.moveTo(screenX, 0);
@@ -2256,7 +2962,7 @@ const drawGraph = (
 
   for (let index = startYIndex; index <= endYIndex; index += 1) {
     const y = index * gridStep;
-    const screenY = originY - y * view.pixelsPerUnit;
+    const screenY = crispLine(originY - y * view.pixelsPerUnit);
     context.beginPath();
     context.strokeStyle = getGridStroke(index);
     context.moveTo(0, screenY);
@@ -2267,10 +2973,10 @@ const drawGraph = (
   context.strokeStyle = "#24211e";
   context.lineWidth = 2;
   context.beginPath();
-  context.moveTo(0, originY);
-  context.lineTo(width, originY);
-  context.moveTo(originX, 0);
-  context.lineTo(originX, height);
+  context.moveTo(0, Math.round(originY));
+  context.lineTo(width, Math.round(originY));
+  context.moveTo(Math.round(originX), 0);
+  context.lineTo(Math.round(originX), height);
   context.stroke();
 
   context.fillStyle = "#4a433d";
@@ -2288,6 +2994,10 @@ const drawGraph = (
 
   context.fillStyle = "#24211e";
   context.fillText("0", originX + 6, originY + 6);
+
+  if (graph.calculatorGuide) {
+    drawCalculatorGuide(context, graph.calculatorGuide, width, height, toScreen);
+  }
 
   graph.shapes.forEach((shape, index) => {
     const isSelected = isSelectedObject(graph.selectedObject, "shape", shape.id);
@@ -2377,6 +3087,28 @@ const drawGraph = (
       context.fillText(`L${index + 1}.${handleIndex + 1}`, toScreen(point).x + 9, toScreen(point).y - 18);
     });
   });
+
+  graph.dataPlots.forEach((plot) => {
+    drawDataPlot(context, plot, toScreen);
+  });
+
+  if (graph.hoverSnapPoint) {
+    const screen = toScreen(graph.hoverSnapPoint.point);
+    context.save();
+    context.beginPath();
+    context.fillStyle = "#ffffff";
+    context.strokeStyle = "#d94f30";
+    context.lineWidth = 2.4;
+    context.arc(screen.x, screen.y, 7, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.strokeStyle = "rgba(217, 79, 48, 0.45)";
+    context.lineWidth = 1.5;
+    context.arc(screen.x, screen.y, 12, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+  }
 
   graph.measures.forEach((measure, index) => {
     const isSelected = isSelectedObject(graph.selectedObject, "measure", measure.id);
@@ -2493,6 +3225,175 @@ const formatTick = (value: number) => {
   return `${rounded}`;
 };
 
+const parseDataValues = (
+  input: string
+): { ok: true; values: DataValue[] } | { ok: false; message: string } => {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      message: "Enter at least one x, y pair. Example: 1, 2",
+    };
+  }
+
+  const jsonValues = parseJsonDataValues(trimmed);
+  if (jsonValues.length > 0) return { ok: true, values: jsonValues };
+
+  const rows = trimmed
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map(splitDataRow);
+
+  const numericRows = rows
+    .map((row) => row.map(readNumberFromCell))
+    .filter((row) => row.some((value) => value !== null));
+  const maxColumns = Math.max(...numericRows.map((row) => row.length), 0);
+  const columnCounts = Array.from({ length: maxColumns }, (_, column) =>
+    numericRows.filter((row) => row[column] !== null).length
+  );
+  const bestColumns = columnCounts
+    .map((count, column) => ({ count, column }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || a.column - b.column);
+  const xColumn = bestColumns[0]?.column ?? -1;
+  const yColumn = bestColumns[1]?.column ?? -1;
+  const values: DataValue[] = [];
+
+  numericRows.forEach((row, index) => {
+    const xValue = row[xColumn];
+    const yValue = row[yColumn];
+    if (
+      xColumn >= 0 &&
+      yColumn >= 0 &&
+      typeof xValue === "number" &&
+      typeof yValue === "number"
+    ) {
+      values.push({
+        x: roundCoordinate(xValue),
+        y: roundCoordinate(yValue),
+      });
+      return;
+    }
+
+    const numericCells = row.filter((value): value is number => value !== null);
+    if (numericCells.length >= 2) {
+      values.push({
+        x: roundCoordinate(numericCells[0]),
+        y: roundCoordinate(numericCells[1]),
+      });
+      return;
+    }
+
+    if (numericCells.length === 1) {
+      values.push({
+        x: index,
+        y: roundCoordinate(numericCells[0]),
+      });
+    }
+  });
+
+  if (values.length === 0) {
+    return { ok: false, message: "I could not find numeric data in that input." };
+  }
+
+  return { ok: true, values };
+};
+
+const parseJsonDataValues = (input: string) => {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const values: DataValue[] = [];
+    parsed.forEach((item, index) => {
+      if (Array.isArray(item)) {
+        const numeric = item
+          .map((value) => readNumberFromCell(String(value)))
+          .filter((value): value is number => value !== null);
+        if (numeric.length >= 2) {
+          values.push({ x: roundCoordinate(numeric[0]), y: roundCoordinate(numeric[1]) });
+        } else if (numeric.length === 1) {
+          values.push({ x: index, y: roundCoordinate(numeric[0]) });
+        }
+        return;
+      }
+
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const entries = Object.entries(record);
+        const xEntry =
+          entries.find(([key]) => /^x$|time|date|year/i.test(key)) ??
+          entries.find(([, value]) => readNumberFromCell(String(value)) !== null);
+        const yEntry =
+          entries.find(([key]) => /^y$|value|amount|price|count|score/i.test(key)) ??
+          entries.find(
+            ([key, value]) =>
+              key !== xEntry?.[0] && readNumberFromCell(String(value)) !== null
+          );
+        const x = xEntry ? readNumberFromCell(String(xEntry[1])) : null;
+        const y = yEntry ? readNumberFromCell(String(yEntry[1])) : null;
+        if (x !== null && y !== null) {
+          values.push({ x: roundCoordinate(x), y: roundCoordinate(y) });
+        } else if (y !== null) {
+          values.push({ x: index, y: roundCoordinate(y) });
+        }
+      }
+    });
+    return values;
+  } catch {
+    return [];
+  }
+};
+
+const splitDataRow = (row: string) => {
+  const matches = row.match(/"[^"]*"|'[^']*'|[^,\t; ]+/g);
+  return matches?.map((cell) => cell.replace(/^["']|["']$/g, "")) ?? [];
+};
+
+const readNumberFromCell = (cell: string) => {
+  const normalized = cell.trim().replace(/,/g, "");
+  const match = normalized.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/i);
+  if (!match) return null;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : null;
+};
+
+const drawCalculatorGuide = (
+  context: CanvasRenderingContext2D,
+  guide: CalculatorGuide,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const y = toScreen({ id: 0, x: 0, y: guide.value }).y;
+  if (y < -80 || y > height + 80) return;
+
+  context.save();
+  context.strokeStyle = "#d94f30";
+  context.fillStyle = "#d94f30";
+  context.lineWidth = 2;
+  context.setLineDash([8, 6]);
+  context.beginPath();
+  context.moveTo(0, y);
+  context.lineTo(width, y);
+  context.stroke();
+  context.setLineDash([]);
+  context.font = "700 12px Inter, system-ui, sans-serif";
+  const label = guide.label.length > 42 ? `${guide.label.slice(0, 39)}...` : guide.label;
+  const labelWidth = context.measureText(label).width + 14;
+  const labelX = clamp(width - labelWidth - 12, 12, width - labelWidth - 12);
+  const labelY = clamp(y - 26, 12, height - 28);
+  context.fillStyle = "rgba(255, 255, 255, 0.95)";
+  context.strokeStyle = "#d94f30";
+  context.lineWidth = 1.5;
+  roundRect(context, labelX, labelY, labelWidth, 22, 5);
+  context.fill();
+  context.stroke();
+  context.fillStyle = "#7f2a18";
+  context.fillText(label, labelX + 7, labelY + 5);
+  context.restore();
+};
+
 const drawShape = (
   context: CanvasRenderingContext2D,
   shape: GraphShape,
@@ -2550,6 +3451,77 @@ const drawShapeSelection = (
   context.restore();
 };
 
+const drawDataPlot = (
+  context: CanvasRenderingContext2D,
+  plot: DataPlot,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  if (plot.values.length === 0) return;
+
+  const sortedValues = [...plot.values].sort((a, b) => a.x - b.x);
+
+  if (plot.style === "bar") {
+    const xValues = sortedValues.map((value) => value.x);
+    const gaps = xValues
+      .slice(1)
+      .map((value, index) => Math.abs(value - xValues[index]))
+      .filter((gap) => gap > 0);
+    const minGap = gaps.length > 0 ? Math.min(...gaps) : 0.5;
+    const barHalfWidth = Math.max(0.08, Math.min(0.35, minGap * 0.35));
+
+    sortedValues.forEach((value) => {
+      const top = toScreen({ id: 0, x: value.x, y: value.y });
+      const base = toScreen({ id: 0, x: value.x, y: 0 });
+      const left = toScreen({ id: 0, x: value.x - barHalfWidth, y: 0 }).x;
+      const right = toScreen({ id: 0, x: value.x + barHalfWidth, y: 0 }).x;
+      context.beginPath();
+      context.fillStyle = withAlpha(plot.color, 0.22);
+      context.strokeStyle = plot.color;
+      context.lineWidth = 1.8;
+      context.rect(
+        left,
+        Math.min(top.y, base.y),
+        right - left,
+        Math.abs(base.y - top.y)
+      );
+      context.fill();
+      context.stroke();
+      drawDataPoint(context, top, plot.color);
+    });
+    return;
+  }
+
+  if (plot.style === "line" || plot.style === "scatter-line") {
+    context.beginPath();
+    context.strokeStyle = plot.color;
+    context.lineWidth = 2.4;
+    sortedValues.forEach((value, index) => {
+      const screen = toScreen({ id: 0, x: value.x, y: value.y });
+      if (index === 0) context.moveTo(screen.x, screen.y);
+      else context.lineTo(screen.x, screen.y);
+    });
+    context.stroke();
+  }
+
+  sortedValues.forEach((value) => {
+    drawDataPoint(context, toScreen({ id: 0, x: value.x, y: value.y }), plot.color);
+  });
+};
+
+const drawDataPoint = (
+  context: CanvasRenderingContext2D,
+  point: { x: number; y: number },
+  color: string
+) => {
+  context.beginPath();
+  context.fillStyle = "#ffffff";
+  context.strokeStyle = color;
+  context.lineWidth = 2.2;
+  context.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+};
+
 const isSelectedObject = (
   selected: ObjectTarget | null,
   kind: ObjectTarget["kind"],
@@ -2577,6 +3549,29 @@ const distanceToSegment = (
     y: a.y + t * dy,
   };
   return Math.hypot(point.x - projection.x, point.y - projection.y);
+};
+
+const closestPointOnSegmentWorld = (
+  point: { x: number; y: number },
+  a: GraphPoint,
+  b: GraphPoint
+): GraphPoint => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (dx === 0 && dy === 0) {
+    return { id: 0, x: a.x, y: a.y };
+  }
+
+  const t = clamp(
+    ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy),
+    0,
+    1
+  );
+  return {
+    id: 0,
+    x: roundCoordinate(a.x + t * dx),
+    y: roundCoordinate(a.y + t * dy),
+  };
 };
 
 const drawHandle = (
