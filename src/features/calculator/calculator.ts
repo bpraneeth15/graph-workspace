@@ -7,7 +7,7 @@ import type {
   GraphPoint,
   GraphShape,
   ObjectTarget,
-} from "./graphTypes";
+} from "../../graphTypes";
 
 type SelectedGraphObject =
   | { kind: "line"; value: GraphLine }

@@ -1,4 +1,4 @@
-import { PointerEvent, useEffect, useMemo, useState } from "react";
+import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   calculateStatistic,
   evaluateExpression,
@@ -29,7 +29,9 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
     startY: number;
     originX: number;
     originY: number;
+    moved: boolean;
   } | null>(null);
+  const collapsedDragMoved = useRef(false);
 
   const selectedSummary = getSelectedObjectSummary(context);
   const dataSummary = useMemo(() => {
@@ -82,29 +84,45 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
     }
   };
 
-  const pointerDown = (event: PointerEvent<HTMLDivElement>) => {
+  const pointerDown = (event: PointerEvent<HTMLElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
+    collapsedDragMoved.current = false;
     setDrag({
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       originX: position.x,
       originY: position.y,
+      moved: false,
     });
   };
 
-  const pointerMove = (event: PointerEvent<HTMLDivElement>) => {
+  const pointerMove = (event: PointerEvent<HTMLElement>) => {
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    const moved = drag.moved || Math.hypot(dx, dy) > 4;
+    if (moved) collapsedDragMoved.current = true;
     setPosition({
       x: Math.min(
-        Math.max(12, drag.originX + event.clientX - drag.startX),
+        Math.max(12, drag.originX + dx),
         Math.max(12, window.innerWidth - 72)
       ),
       y: Math.min(
-        Math.max(12, drag.originY + event.clientY - drag.startY),
+        Math.max(12, drag.originY + dy),
         Math.max(12, window.innerHeight - 72)
       ),
     });
+    if (moved && !drag.moved) {
+      setDrag({ ...drag, moved: true });
+    }
+  };
+
+  const pointerUp = (event: PointerEvent<HTMLElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDrag(null);
   };
 
   if (collapsed) {
@@ -112,7 +130,17 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
       <button
         aria-label="Open calculator"
         className="calculator-float-button"
-        onClick={() => setCollapsed(false)}
+        onClick={() => {
+          if (collapsedDragMoved.current) {
+            collapsedDragMoved.current = false;
+            return;
+          }
+          setCollapsed(false);
+        }}
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerCancel={pointerUp}
+        onPointerUp={pointerUp}
         style={{ left: position.x, top: position.y }}
         type="button"
       >
@@ -130,7 +158,8 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
         className="calculator-titlebar"
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
-        onPointerUp={() => setDrag(null)}
+        onPointerCancel={pointerUp}
+        onPointerUp={pointerUp}
       >
         <strong>Calculator</strong>
         <div className="calculator-title-actions">

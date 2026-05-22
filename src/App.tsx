@@ -4,12 +4,32 @@ import {
   FormEvent,
   PointerEvent,
   ReactNode,
+  Suspense,
   WheelEvent,
+  lazy,
   useEffect,
   useRef,
   useState,
 } from "react";
-import { ScientificCalculator } from "./ScientificCalculator";
+import { ScientificCalculator } from "./features/calculator/ScientificCalculator";
+import {
+  COLOR_SWATCHES,
+  DEFAULT_SIDEBAR_WIDTH,
+  DRAW_LINE_THRESHOLD_PX,
+  MAX_SIDEBAR_WIDTH,
+  MAX_ZOOM,
+  MIN_SIDEBAR_WIDTH,
+  MIN_ZOOM,
+  PINCH_ZOOM_FACTOR_PER_DELTA,
+  SNAP_STEPS,
+  START_VIEW,
+  SUBGRID_STEP,
+  SURFACE_PRESETS,
+  TAP_THRESHOLD_PX,
+  TRACKPAD_WHEEL_PAN_THRESHOLD,
+  WHEEL_ZOOM_FACTOR_PER_DELTA,
+  ZOOM_BUTTON_STEP,
+} from "./config/graphConfig";
 import type {
   CalculatorGuide,
   DataPlot,
@@ -22,7 +42,49 @@ import type {
   GraphPoint,
   GraphShape,
   ObjectTarget,
+  RendererMode,
+  SurfaceDataPoint,
+  SurfaceShape,
+  SurfaceStroke,
+  SurfaceTool,
+  SurfaceVector3,
+  Tool,
+  ViewState,
+  WorkspaceMode,
 } from "./graphTypes";
+import { parseDataValues } from "./lib/dataParsing";
+import {
+  formatCurveEquation,
+  formatLineEquation,
+  formatMeasureLabel,
+  formatNumber,
+  formatShapeLabel,
+  getDataInputLabel,
+  getDataInputPlaceholder,
+  getDistance,
+  getLineParts,
+  getObjectTitle,
+  getQuadraticCoefficients,
+  getShapeBounds,
+  getToolHelp,
+  getToolTitle,
+  isTypingTarget,
+} from "./lib/graphFormatting";
+import {
+  clamp,
+  closestPointOnSegmentWorld,
+  crispLine,
+  distanceToSegment,
+  getCanvasDpr,
+  niceStep,
+  roundCoordinate,
+} from "./lib/graphMath";
+
+const Surface3DViewer = lazy(() =>
+  import("./features/surface/Surface3DViewer").then((module) => ({
+    default: module.Surface3DViewer,
+  }))
+);
 
 type GraphSnapshot = {
   points: GraphPoint[];
@@ -32,14 +94,6 @@ type GraphSnapshot = {
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
 };
-
-type ViewState = {
-  offsetX: number;
-  offsetY: number;
-  pixelsPerUnit: number;
-};
-
-type Tool = "plot" | "line" | "curve" | "rectangle" | "square" | "measure" | "pan";
 
 type HandleTarget =
   | { kind: "point"; id: number }
@@ -78,43 +132,6 @@ type DragState = {
   objectTarget?: ObjectTarget;
 };
 
-const START_VIEW: ViewState = {
-  offsetX: 0,
-  offsetY: 0,
-  pixelsPerUnit: 64,
-};
-
-const MIN_ZOOM = 12;
-const MAX_ZOOM = 480;
-const ZOOM_BUTTON_STEP = 1;
-const WHEEL_ZOOM_PX_PER_DELTA = 0.01;
-const SNAP_STEPS = [1, 0.5, 0.25, 0.1, 0.05, 0.01];
-const COLOR_SWATCHES = ["#28666e", "#7a4f9a", "#d94f30", "#2f8f5b", "#c28a16", "#24211e"];
-const SUBGRID_STEP = 0.25;
-const TAP_THRESHOLD_PX = 6;
-const DRAW_LINE_THRESHOLD_PX = 18;
-const DEFAULT_SIDEBAR_WIDTH = 320;
-const MIN_SIDEBAR_WIDTH = 220;
-const MAX_SIDEBAR_WIDTH = 520;
-
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
-
-const getCanvasDpr = () => Math.min(3, Math.max(2, window.devicePixelRatio || 1));
-
-const crispLine = (value: number) => Math.round(value) + 0.5;
-
-const roundCoordinate = (value: number) => {
-  if (Math.abs(value) < 0.000001) return 0;
-  return Number(value.toFixed(4));
-};
-
-const niceStep = (rawStep: number) => {
-  const exponent = Math.floor(Math.log10(rawStep));
-  const base = rawStep / 10 ** exponent;
-  const niceBase = base <= 1 ? 1 : base <= 2 ? 2 : base <= 5 ? 5 : 10;
-  return niceBase * 10 ** exponent;
-};
 
 const clonePoint = (point: GraphPoint): GraphPoint => ({ ...point });
 
@@ -162,6 +179,9 @@ const App = () => {
   const nextShapeId = useRef(1);
   const nextMeasureId = useRef(1);
   const nextDataPlotId = useRef(1);
+  const nextSurfaceShapeId = useRef(2);
+  const nextSurfaceStrokeId = useRef(1);
+  const nextSurfaceDataPointId = useRef(1);
 
   const [view, setView] = useState<ViewState>(START_VIEW);
   const [points, setPoints] = useState<GraphPoint[]>([]);
@@ -172,6 +192,7 @@ const App = () => {
   const [dataPlots, setDataPlots] = useState<DataPlot[]>([]);
   const [draftPoints, setDraftPoints] = useState<GraphPoint[]>([]);
   const [tool, setTool] = useState<Tool>("plot");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("2d");
   const [selectedColor, setSelectedColor] = useState(COLOR_SWATCHES[0]);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [snapStep, setSnapStep] = useState(0.1);
@@ -185,6 +206,30 @@ const App = () => {
   const [dataXInput, setDataXInput] = useState("");
   const [dataYInput, setDataYInput] = useState("");
   const [dataError, setDataError] = useState("");
+  const [surfaceShapes, setSurfaceShapes] = useState<SurfaceShape[]>([
+    {
+      id: 1,
+      name: "Surface 1",
+      equation: "sin(sqrt(x*x + y*y))",
+      color: COLOR_SWATCHES[0],
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  ]);
+  const [selectedSurfaceShapeId, setSelectedSurfaceShapeId] = useState(1);
+  const [surfaceTool, setSurfaceTool] = useState<SurfaceTool>("select");
+  const [surfaceStrokes, setSurfaceStrokes] = useState<SurfaceStroke[]>([]);
+  const [surfaceDataPoints, setSurfaceDataPoints] = useState<SurfaceDataPoint[]>([]);
+  const [surfaceRange, setSurfaceRange] = useState(6);
+  const [surfaceResolution, setSurfaceResolution] = useState(48);
+  const [surfaceShowSlices, setSurfaceShowSlices] = useState(true);
+  const [surfaceShowContour, setSurfaceShowContour] = useState(true);
+  const [surfaceCutX, setSurfaceCutX] = useState(0);
+  const [surfaceCutY, setSurfaceCutY] = useState(0);
+  const [surfaceCutZ, setSurfaceCutZ] = useState(0);
+  const [rendererMode, setRendererMode] = useState<RendererMode>("auto");
+  const [mouseSensitivity, setMouseSensitivity] = useState(1);
+  const [zoomSensitivity, setZoomSensitivity] = useState(1);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedObject, setSelectedObject] = useState<ObjectTarget | null>(null);
   const [hoverMenu, setHoverMenu] = useState<HoverMenu | null>(null);
@@ -194,10 +239,113 @@ const App = () => {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const effectiveRenderer: "canvas" | "gpu" =
+    workspaceMode === "surface" ? (rendererMode === "canvas" ? "canvas" : "gpu") : "canvas";
+  const rendererStatusText =
+    workspaceMode === "surface"
+      ? `Active: ${effectiveRenderer === "gpu" ? "GPU / WebGL" : "Canvas 2D"}`
+      : rendererMode === "gpu"
+        ? "GPU selected. Current 2D board still uses Canvas 2D."
+        : "Active: Canvas 2D";
+  const selectedSurfaceShape =
+    surfaceShapes.find((shape) => shape.id === selectedSurfaceShapeId) ??
+    surfaceShapes[0];
+  const surfaceEquation =
+    selectedSurfaceShape?.equation ?? "sin(sqrt(x*x + y*y))";
+  const surfaceColor = selectedSurfaceShape?.color ?? COLOR_SWATCHES[0];
 
   const selectTool = (nextTool: Tool) => {
     setTool(nextTool);
     setDraftPoints([]);
+  };
+
+  const switchWorkspaceMode = (nextMode: WorkspaceMode) => {
+    setWorkspaceMode(nextMode);
+    setDraftPoints([]);
+    setHoverMenu(null);
+    setHoverSnapPoint(null);
+    setCursor(null);
+  };
+
+  const applySurfacePreset = (preset: (typeof SURFACE_PRESETS)[number]) => {
+    updateSelectedSurfaceShape({ equation: preset.equation });
+    setSurfaceRange(preset.range);
+    setSurfaceResolution(preset.resolution);
+  };
+
+  const updateSelectedSurfaceShape = (patch: Partial<SurfaceShape>) => {
+    setSurfaceShapes((current) =>
+      current.map((shape) =>
+        shape.id === selectedSurfaceShapeId ? { ...shape, ...patch } : shape
+      )
+    );
+  };
+
+  const updateSurfaceShapeTransform = (
+    id: number,
+    transform: { position?: SurfaceVector3; scale?: SurfaceVector3 }
+  ) => {
+    setSurfaceShapes((current) =>
+      current.map((shape) =>
+        shape.id === id
+          ? {
+              ...shape,
+              position: transform.position ?? shape.position,
+              scale: transform.scale ?? shape.scale,
+            }
+          : shape
+      )
+    );
+  };
+
+  const replicateSurfaceShape = () => {
+    if (!selectedSurfaceShape) return;
+    const id = nextSurfaceShapeId.current++;
+    const copy: SurfaceShape = {
+      ...selectedSurfaceShape,
+      id,
+      name: `Surface ${id}`,
+      position: {
+        x: selectedSurfaceShape.position.x + 0.8,
+        y: selectedSurfaceShape.position.y,
+        z: selectedSurfaceShape.position.z + 0.8,
+      },
+      scale: { ...selectedSurfaceShape.scale },
+    };
+    setSurfaceShapes((current) => [...current, copy]);
+    setSelectedSurfaceShapeId(id);
+    setSurfaceTool("select");
+  };
+
+  const saveWorkspaceSnapshot = () => {
+    localStorage.setItem(
+      "graph-workspace:snapshot",
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        workspaceMode,
+        view,
+        points,
+        lines,
+        curves,
+        shapes,
+        measures,
+        dataPlots,
+        surface: {
+          selectedShapeId: selectedSurfaceShapeId,
+          shapes: surfaceShapes,
+          strokes: surfaceStrokes,
+          dataPoints: surfaceDataPoints,
+          range: surfaceRange,
+          resolution: surfaceResolution,
+          slices: {
+            show: surfaceShowSlices,
+            x: surfaceCutX,
+            y: surfaceCutY,
+            z: surfaceCutZ,
+          },
+        },
+      })
+    );
   };
 
   const getGraphSnapshot = (): GraphSnapshot =>
@@ -1491,12 +1639,14 @@ const App = () => {
 
     if (drag.mode === "pan") {
       const dt = Math.max(1, event.timeStamp - drag.lastMoveTime);
-      const nextVelocityX = dx / dt;
-      const nextVelocityY = dy / dt;
+      const scaledDx = dx * mouseSensitivity;
+      const scaledDy = dy * mouseSensitivity;
+      const nextVelocityX = scaledDx / dt;
+      const nextVelocityY = scaledDy / dt;
       drag.velocityX = drag.velocityX * 0.65 + nextVelocityX * 0.35;
       drag.velocityY = drag.velocityY * 0.65 + nextVelocityY * 0.35;
       drag.lastMoveTime = event.timeStamp;
-      queuePanBy(dx, dy);
+      queuePanBy(scaledDx, scaledDy);
     }
 
     drag.lastX = event.clientX;
@@ -1559,10 +1709,35 @@ const App = () => {
 
   const handleWheel = (event: WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
-    zoomTo(
+
+    const isPinchZoom = event.ctrlKey || event.metaKey;
+    const looksLikeTrackpadPan =
+      !isPinchZoom &&
+      event.deltaMode === 0 &&
+      (Math.abs(event.deltaX) > 0.5 ||
+        Math.abs(event.deltaY) < TRACKPAD_WHEEL_PAN_THRESHOLD);
+
+    if (looksLikeTrackpadPan) {
+      stopPanInertia();
+      queuePanBy(-event.deltaX * mouseSensitivity, -event.deltaY * mouseSensitivity);
+      return;
+    }
+
+    const normalizedDelta =
+      event.deltaMode === 1
+        ? event.deltaY * 16
+        : event.deltaMode === 2
+          ? event.deltaY * 120
+          : event.deltaY;
+    const zoomSpeed = isPinchZoom
+      ? PINCH_ZOOM_FACTOR_PER_DELTA
+      : WHEEL_ZOOM_FACTOR_PER_DELTA;
+    const zoomFactor = Math.exp(-normalizedDelta * zoomSpeed * zoomSensitivity);
+
+    zoomAt(
       event.clientX,
       event.clientY,
-      view.pixelsPerUnit - event.deltaY * WHEEL_ZOOM_PX_PER_DELTA
+      zoomFactor
     );
   };
 
@@ -1767,6 +1942,73 @@ const App = () => {
           : `${sidebarWidth}px 10px minmax(0, 1fr)`,
       }}
     >
+      <nav className="app-menu-bar" aria-label="Application menu">
+        <details className="app-menu-item">
+          <summary>File</summary>
+          <div className="app-menu-dropdown">
+            <button type="button" onClick={saveWorkspaceSnapshot}>
+              Save workspace
+            </button>
+            <button type="button" onClick={() => setView(START_VIEW)}>
+              Reset view
+            </button>
+          </div>
+        </details>
+
+        <details className="app-menu-item">
+          <summary>Tools</summary>
+          <div className="app-menu-dropdown tools-dropdown">
+            <label className="field sensitivity-field">
+              <span>Mouse movement sensitivity</span>
+              <div className="sensitivity-row">
+                <input
+                  max="5"
+                  min="0.25"
+                  onChange={(event) => setMouseSensitivity(Number(event.target.value))}
+                  step="0.05"
+                  type="range"
+                  value={mouseSensitivity}
+                />
+                <code>{Math.round(mouseSensitivity * 100)}%</code>
+              </div>
+            </label>
+            <label className="field sensitivity-field">
+              <span>Zoom sensitivity</span>
+              <div className="sensitivity-row">
+                <input
+                  max="8"
+                  min="0.25"
+                  onChange={(event) => setZoomSensitivity(Number(event.target.value))}
+                  step="0.1"
+                  type="range"
+                  value={zoomSensitivity}
+                />
+                <code>{Math.round(zoomSensitivity * 100)}%</code>
+              </div>
+            </label>
+          </div>
+        </details>
+
+        <details className="app-menu-item">
+          <summary>View</summary>
+          <div className="app-menu-dropdown">
+            <button type="button" onClick={() => switchWorkspaceMode("2d")}>
+              2D graph mode
+            </button>
+            <button type="button" onClick={() => switchWorkspaceMode("surface")}>
+              3D surface mode
+            </button>
+          </div>
+        </details>
+
+        <button className="app-menu-button" type="button" onClick={saveWorkspaceSnapshot}>
+          Save
+        </button>
+        <button className="app-menu-button" type="button" onClick={() => window.close()}>
+          Exit
+        </button>
+      </nav>
+
       <aside
         className={isSidebarCollapsed ? "sidebar collapsed" : "sidebar"}
         aria-label="Graph controls"
@@ -1779,89 +2021,314 @@ const App = () => {
           </div>
         </div>
 
-        <section className="control-section">
-          <h2>Tool</h2>
-          <div className="segmented">
-            <button
-              className={tool === "plot" ? "active" : ""}
-              onClick={() => selectTool("plot")}
-              type="button"
-            >
-              Plot
-            </button>
-            <button
-              className={tool === "line" ? "active" : ""}
-              onClick={() => selectTool("line")}
-              type="button"
-            >
-              Line
-            </button>
-            <button
-              className={tool === "curve" ? "active" : ""}
-              onClick={() => selectTool("curve")}
-              type="button"
-            >
-              Curve
-            </button>
-            <button
-              className={tool === "rectangle" ? "active" : ""}
-              onClick={() => selectTool("rectangle")}
-              type="button"
-            >
-              Rect
-            </button>
-            <button
-              className={tool === "square" ? "active" : ""}
-              onClick={() => selectTool("square")}
-              type="button"
-            >
-              Square
-            </button>
-            <button
-              className={tool === "measure" ? "active" : ""}
-              onClick={() => selectTool("measure")}
-              type="button"
-            >
-              Distance
-            </button>
-            <button
-              className={tool === "pan" ? "active" : ""}
-              onClick={() => selectTool("pan")}
-              type="button"
-            >
-              Pan
-            </button>
-          </div>
-          <div className="color-tools">
-            <span>{selectedObject ? "Selected color" : "Color"}</span>
-            <div className="swatches">
-              {COLOR_SWATCHES.map((color) => (
+        {workspaceMode === "2d" ? (
+          <section className="control-section">
+            <h2>Tool</h2>
+            <div className="segmented">
+              <button
+                className={tool === "plot" ? "active" : ""}
+                onClick={() => selectTool("plot")}
+                type="button"
+              >
+                Plot
+              </button>
+              <button
+                className={tool === "line" ? "active" : ""}
+                onClick={() => selectTool("line")}
+                type="button"
+              >
+                Line
+              </button>
+              <button
+                className={tool === "curve" ? "active" : ""}
+                onClick={() => selectTool("curve")}
+                type="button"
+              >
+                Curve
+              </button>
+              <button
+                className={tool === "rectangle" ? "active" : ""}
+                onClick={() => selectTool("rectangle")}
+                type="button"
+              >
+                Rect
+              </button>
+              <button
+                className={tool === "square" ? "active" : ""}
+                onClick={() => selectTool("square")}
+                type="button"
+              >
+                Square
+              </button>
+              <button
+                className={tool === "measure" ? "active" : ""}
+                onClick={() => selectTool("measure")}
+                type="button"
+              >
+                Distance
+              </button>
+              <button
+                className={tool === "pan" ? "active" : ""}
+                onClick={() => selectTool("pan")}
+                type="button"
+              >
+                Pan
+              </button>
+            </div>
+            <div className="color-tools">
+              <span>{selectedObject ? "Selected color" : "Color"}</span>
+              <div className="swatches">
+                {COLOR_SWATCHES.map((color) => (
+                  <button
+                    aria-label={`Select color ${color}`}
+                    className={activeColor === color ? "swatch active" : "swatch"}
+                    key={color}
+                    onClick={() => applyDrawingColor(color)}
+                    style={{ backgroundColor: color }}
+                    type="button"
+                  />
+                ))}
+                <label className="custom-color">
+                  <span>Custom</span>
+                  <input
+                    aria-label="Custom drawing color"
+                    onChange={(event) => applyDrawingColor(event.target.value)}
+                    type="color"
+                    value={activeColor}
+                  />
+                </label>
+              </div>
+              <small>
+                {selectedObject
+                  ? "Changes the selected object now."
+                  : "Sets the color for new objects."}
+              </small>
+            </div>
+          </section>
+        ) : null}
+
+        {workspaceMode === "surface" ? (
+          <section className="control-section">
+            <h2>3D Tools</h2>
+            <div className="surface-tool-grid">
+              {[
+                ["select", "Select"],
+                ["pen", "Pen"],
+                ["pencil", "Pencil"],
+                ["cutter", "Cutter"],
+                ["fill", "Fill"],
+                ["paint", "Paint"],
+                ["scale", "Scale"],
+                ["stretch", "Stretch"],
+                ["shrink", "Shrink"],
+                ["data", "Plot data"],
+              ].map(([value, label]) => (
                 <button
-                  aria-label={`Select color ${color}`}
-                  className={activeColor === color ? "swatch active" : "swatch"}
-                  key={color}
-                  onClick={() => applyDrawingColor(color)}
-                  style={{ backgroundColor: color }}
+                  className={surfaceTool === value ? "active" : ""}
+                  key={value}
+                  onClick={() => setSurfaceTool(value as SurfaceTool)}
                   type="button"
-                />
+                >
+                  {label}
+                </button>
               ))}
-              <label className="custom-color">
-                <span>Custom</span>
+              <button onClick={replicateSurfaceShape} type="button">
+                Replicate
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {workspaceMode === "surface" ? (
+          <section className="control-section">
+            <h2>3D Shapes</h2>
+            <label className="field">
+              <span>Selected shape</span>
+              <select
+                onChange={(event) =>
+                  setSelectedSurfaceShapeId(Number(event.target.value))
+                }
+                value={selectedSurfaceShape?.id ?? ""}
+              >
+                {surfaceShapes.map((shape) => (
+                  <option key={shape.id} value={shape.id}>
+                    {shape.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>z = f(x, y)</span>
+              <input
+                onChange={(event) =>
+                  updateSelectedSurfaceShape({ equation: event.target.value })
+                }
+                spellCheck={false}
+                type="text"
+                value={surfaceEquation}
+              />
+            </label>
+            <label className="field">
+              <span>Range</span>
+              <input
+                max="12"
+                min="2"
+                onChange={(event) => setSurfaceRange(Number(event.target.value))}
+                step="0.5"
+                type="range"
+                value={surfaceRange}
+              />
+            </label>
+            <label className="field">
+              <span>Resolution</span>
+              <input
+                max="80"
+                min="16"
+                onChange={(event) => setSurfaceResolution(Number(event.target.value))}
+                step="4"
+                type="range"
+                value={surfaceResolution}
+              />
+            </label>
+            <label className="custom-color surface-color">
+              <span>Surface color</span>
+              <input
+                aria-label="3D surface color"
+                onChange={(event) =>
+                  updateSelectedSurfaceShape({ color: event.target.value })
+                }
+                type="color"
+                value={surfaceColor}
+              />
+            </label>
+            {selectedSurfaceShape ? (
+              <div className="surface-transform-fields">
+                <label className="field">
+                  <span>Scale</span>
+                  <input
+                    max="3"
+                    min="0.2"
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      updateSelectedSurfaceShape({
+                        scale: { x: value, y: value, z: value },
+                      });
+                    }}
+                    step="0.05"
+                    type="range"
+                    value={selectedSurfaceShape.scale.x}
+                  />
+                </label>
+                <label className="field">
+                  <span>Stretch x</span>
+                  <input
+                    max="3"
+                    min="0.2"
+                    onChange={(event) =>
+                      updateSelectedSurfaceShape({
+                        scale: {
+                          ...selectedSurfaceShape.scale,
+                          x: Number(event.target.value),
+                        },
+                      })
+                    }
+                    step="0.05"
+                    type="range"
+                    value={selectedSurfaceShape.scale.x}
+                  />
+                </label>
+                <label className="field">
+                  <span>Stretch y</span>
+                  <input
+                    max="3"
+                    min="0.2"
+                    onChange={(event) =>
+                      updateSelectedSurfaceShape({
+                        scale: {
+                          ...selectedSurfaceShape.scale,
+                          z: Number(event.target.value),
+                        },
+                      })
+                    }
+                    step="0.05"
+                    type="range"
+                    value={selectedSurfaceShape.scale.z}
+                  />
+                </label>
+              </div>
+            ) : null}
+            <div className="surface-slice-controls">
+              <label className="toggle">
                 <input
-                  aria-label="Custom drawing color"
-                  onChange={(event) => applyDrawingColor(event.target.value)}
-                  type="color"
-                  value={activeColor}
+                  checked={surfaceShowSlices}
+                  onChange={(event) => setSurfaceShowSlices(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Show colored cuts</span>
+              </label>
+              <label className="toggle">
+                <input
+                  checked={surfaceShowContour}
+                  onChange={(event) => setSurfaceShowContour(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Show contour view</span>
+              </label>
+              <label className="field">
+                <span>Vertical x cut: {surfaceCutX}</span>
+                <input
+                  max={surfaceRange}
+                  min={-surfaceRange}
+                  onChange={(event) => setSurfaceCutX(Number(event.target.value))}
+                  step="0.25"
+                  type="range"
+                  value={surfaceCutX}
+                />
+              </label>
+              <label className="field">
+                <span>Vertical y cut: {surfaceCutY}</span>
+                <input
+                  max={surfaceRange}
+                  min={-surfaceRange}
+                  onChange={(event) => setSurfaceCutY(Number(event.target.value))}
+                  step="0.25"
+                  type="range"
+                  value={surfaceCutY}
+                />
+              </label>
+              <label className="field">
+                <span>Horizontal z cut: {surfaceCutZ}</span>
+                <input
+                  max={surfaceRange}
+                  min={-surfaceRange}
+                  onChange={(event) => setSurfaceCutZ(Number(event.target.value))}
+                  step="0.25"
+                  type="range"
+                  value={surfaceCutZ}
                 />
               </label>
             </div>
-            <small>
-              {selectedObject
-                ? "Changes the selected object now."
-                : "Sets the color for new objects."}
-            </small>
-          </div>
-        </section>
+            <div className="surface-preset-block">
+              <span>ML presets</span>
+              <div className="surface-presets">
+                {SURFACE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.name}
+                    onClick={() => applySurfacePreset(preset)}
+                    type="button"
+                  >
+                    <strong>{preset.name}</strong>
+                    <small>{preset.description}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="surface-help">
+              Use x and y. Supported functions: sin, cos, tan, sqrt, log, exp, abs, pow,
+              min, max.
+            </p>
+          </section>
+        ) : null}
 
         <section className="control-section">
           <h2>View</h2>
@@ -1914,6 +2381,35 @@ const App = () => {
             <span>{Math.round(view.pixelsPerUnit)} px / unit</span>
             <span>Grid: {SUBGRID_STEP} unit</span>
           </div>
+          <label className="field">
+            <span>Renderer</span>
+            <div className="renderer-toggle">
+              <button
+                className={rendererMode === "auto" ? "active" : ""}
+                onClick={() => setRendererMode("auto")}
+                type="button"
+              >
+                Auto
+              </button>
+              <button
+                className={rendererMode === "canvas" ? "active" : ""}
+                onClick={() => setRendererMode("canvas")}
+                type="button"
+              >
+                Canvas
+              </button>
+              <button
+                className={rendererMode === "gpu" ? "active" : ""}
+                onClick={() => setRendererMode("gpu")}
+                type="button"
+              >
+                GPU
+              </button>
+            </div>
+          </label>
+          <p className="renderer-status">
+            {rendererStatusText}
+          </p>
           <button
             className="danger"
             disabled={!selectedObject}
@@ -2505,131 +3001,208 @@ const App = () => {
 
       <section className="workspace">
         <div className="topbar">
-          <div>
-            <strong>{getToolTitle(tool)}</strong>
-            <span>
-              {getToolHelp(tool, draftPoints.length)}
-            </span>
+          <div className="topbar-main">
+            <div>
+              <strong>
+                {workspaceMode === "surface" ? "3D Surface mode" : getToolTitle(tool)}
+              </strong>
+              <span>
+                {workspaceMode === "surface"
+                  ? "Visualize z = f(x, y). Right-drag to spin, two-finger scroll to roam, and pinch or wheel to zoom."
+                  : getToolHelp(tool, draftPoints.length)}
+              </span>
+            </div>
+            <button
+              className="mode-switch-button"
+              onClick={() =>
+                switchWorkspaceMode(workspaceMode === "surface" ? "2d" : "surface")
+              }
+              type="button"
+            >
+              {workspaceMode === "surface" ? "Go 2D Graph mode" : "Go 3D Surface mode"}
+            </button>
           </div>
-          <code>
-            x: {cursor ? cursor.x : 0}, y: {cursor ? cursor.y : 0}
-          </code>
+          {workspaceMode === "2d" ? (
+            <code>
+              x: {cursor ? cursor.x : 0}, y: {cursor ? cursor.y : 0}
+            </code>
+          ) : (
+            <code>z = f(x, y)</code>
+          )}
         </div>
         <div className="canvas-wrap" ref={wrapperRef}>
-          <canvas
-            aria-label="Interactive graph canvas"
-            className={tool === "pan" ? "graph-canvas pan-mode" : "graph-canvas"}
-            onPointerDown={handlePointerDown}
-            onPointerLeave={() => {
-              setCursor(null);
-              setHoverSnapPoint(null);
-            }}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onContextMenu={(event) => event.preventDefault()}
-            onWheel={handleWheel}
-            ref={canvasRef}
-          />
-          {lines.map((line) => {
-            const target: ObjectTarget = { kind: "line", id: line.id };
-            if (!shouldShowOverlay(target, line.showLabel)) return null;
-            const a = getCanvasPoint(line.a);
-            const b = getCanvasPoint(line.b);
-            const active = isOverlayActive(target);
-            return (
-              <InlineGraphLabel
-                active={active}
-                color={line.color}
-                key={`line-label-${line.id}`}
-                label={line.showLabel ? formatLineEquation(line) : "Show label"}
-                onHide={() => updateLabelVisibility(target, false)}
-                onPointerDown={() => setSelectedObject(target)}
-                onShow={() => updateLabelVisibility(target, true)}
-                showLabel={line.showLabel}
-                style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
-              >
-                <LineEditor
-                  line={line}
-                  onChange={(next) => updateLineFromEquation(line.id, next)}
-                />
-              </InlineGraphLabel>
-            );
-          })}
-          {curves.map((curve) => {
-            const target: ObjectTarget = { kind: "curve", id: curve.id };
-            if (!shouldShowOverlay(target, curve.showLabel)) return null;
-            const active = isOverlayActive(target);
-            return (
-              <InlineGraphLabel
-                active={active}
-                color={curve.color}
-                key={`curve-label-${curve.id}`}
-                label={curve.showLabel ? formatCurveEquation(curve) : "Show label"}
-                onHide={() => updateLabelVisibility(target, false)}
-                onPointerDown={() => setSelectedObject(target)}
-                onShow={() => updateLabelVisibility(target, true)}
-                showLabel={curve.showLabel}
-                style={getLabelStyle(getCanvasPoint(curve.b))}
-              >
-                <CurveEditor
-                  curve={curve}
-                  onChange={(next) => updateCurveFromEquation(curve.id, next)}
-                />
-              </InlineGraphLabel>
-            );
-          })}
-          {shapes.map((shape) => {
-            const target: ObjectTarget = { kind: "shape", id: shape.id };
-            if (!shouldShowOverlay(target, shape.showLabel)) return null;
-            const bounds = getShapeBounds(shape);
-            const active = isOverlayActive(target);
-            return (
-              <InlineGraphLabel
-                active={active}
-                color={shape.color}
-                key={`shape-label-${shape.id}`}
-                label={shape.showLabel ? formatShapeLabel(shape) : "Show label"}
-                onHide={() => updateLabelVisibility(target, false)}
-                onPointerDown={() => setSelectedObject(target)}
-                onShow={() => updateLabelVisibility(target, true)}
-                showLabel={shape.showLabel}
-                style={getLabelStyle(
-                  getCanvasPoint({
-                    id: 0,
-                    x: bounds.x + bounds.width / 2,
-                    y: bounds.y + bounds.height,
-                  })
-                )}
-              >
-                <ShapeEditor
-                  shape={shape}
-                  onChange={(next) => updateShapeSize(shape.id, next)}
-                />
-              </InlineGraphLabel>
-            );
-          })}
-          {measures.map((measure) => {
-            const target: ObjectTarget = { kind: "measure", id: measure.id };
-            if (!shouldShowOverlay(target, measure.showLabel)) return null;
-            const a = getCanvasPoint(measure.a);
-            const b = getCanvasPoint(measure.b);
-            const active = isOverlayActive(target);
-            return (
-              <InlineGraphLabel
-                active={active}
-                color={measure.color}
-                key={`measure-label-${measure.id}`}
-                label={measure.showLabel ? formatMeasureLabel(measure) : "Show label"}
-                onHide={() => updateLabelVisibility(target, false)}
-                onPointerDown={() => setSelectedObject(target)}
-                onShow={() => updateLabelVisibility(target, true)}
-                showLabel={measure.showLabel}
-                style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
-              >
-                <MeasureDetails measure={measure} />
-              </InlineGraphLabel>
-            );
-          })}
+          {workspaceMode === "surface" ? (
+            <Suspense
+              fallback={
+                <div className="surface-loading">
+                  Loading 3D surface...
+                </div>
+              }
+            >
+              <Surface3DViewer
+                color={surfaceColor}
+                cutX={surfaceCutX}
+                cutY={surfaceCutY}
+                cutZ={surfaceCutZ}
+                dataPoints={surfaceDataPoints}
+                equation={surfaceEquation}
+                mouseSensitivity={mouseSensitivity}
+                onAddDataPoint={(point, color) =>
+                  setSurfaceDataPoints((current) => [
+                    ...current,
+                    {
+                      ...point,
+                      color,
+                      id: nextSurfaceDataPointId.current++,
+                    },
+                  ])
+                }
+                onAddStroke={(stroke) =>
+                  setSurfaceStrokes((current) => [
+                    ...current,
+                    { ...stroke, id: nextSurfaceStrokeId.current++ },
+                  ])
+                }
+                onColorShape={(id, color) =>
+                  setSurfaceShapes((current) =>
+                    current.map((shape) =>
+                      shape.id === id ? { ...shape, color } : shape
+                    )
+                  )
+                }
+                onSelectShape={setSelectedSurfaceShapeId}
+                onTransformShape={updateSurfaceShapeTransform}
+                paintColor={surfaceColor}
+                range={surfaceRange}
+                renderer={effectiveRenderer}
+                resolution={surfaceResolution}
+                selectedShapeId={selectedSurfaceShapeId}
+                shapes={surfaceShapes}
+                showContour={surfaceShowContour}
+                showSlices={surfaceShowSlices}
+                strokes={surfaceStrokes}
+                tool={surfaceTool}
+                zoomSensitivity={zoomSensitivity}
+              />
+            </Suspense>
+          ) : (
+            <>
+              <canvas
+                aria-label="Interactive graph canvas"
+                className={tool === "pan" ? "graph-canvas pan-mode" : "graph-canvas"}
+                onPointerDown={handlePointerDown}
+                onPointerLeave={() => {
+                  setCursor(null);
+                  setHoverSnapPoint(null);
+                }}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onContextMenu={(event) => event.preventDefault()}
+                onWheel={handleWheel}
+                ref={canvasRef}
+              />
+              {lines.map((line) => {
+                const target: ObjectTarget = { kind: "line", id: line.id };
+                if (!shouldShowOverlay(target, line.showLabel)) return null;
+                const a = getCanvasPoint(line.a);
+                const b = getCanvasPoint(line.b);
+                const active = isOverlayActive(target);
+                return (
+                  <InlineGraphLabel
+                    active={active}
+                    color={line.color}
+                    key={`line-label-${line.id}`}
+                    label={line.showLabel ? formatLineEquation(line) : "Show label"}
+                    onHide={() => updateLabelVisibility(target, false)}
+                    onPointerDown={() => setSelectedObject(target)}
+                    onShow={() => updateLabelVisibility(target, true)}
+                    showLabel={line.showLabel}
+                    style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
+                  >
+                    <LineEditor
+                      line={line}
+                      onChange={(next) => updateLineFromEquation(line.id, next)}
+                    />
+                  </InlineGraphLabel>
+                );
+              })}
+              {curves.map((curve) => {
+                const target: ObjectTarget = { kind: "curve", id: curve.id };
+                if (!shouldShowOverlay(target, curve.showLabel)) return null;
+                const active = isOverlayActive(target);
+                return (
+                  <InlineGraphLabel
+                    active={active}
+                    color={curve.color}
+                    key={`curve-label-${curve.id}`}
+                    label={curve.showLabel ? formatCurveEquation(curve) : "Show label"}
+                    onHide={() => updateLabelVisibility(target, false)}
+                    onPointerDown={() => setSelectedObject(target)}
+                    onShow={() => updateLabelVisibility(target, true)}
+                    showLabel={curve.showLabel}
+                    style={getLabelStyle(getCanvasPoint(curve.b))}
+                  >
+                    <CurveEditor
+                      curve={curve}
+                      onChange={(next) => updateCurveFromEquation(curve.id, next)}
+                    />
+                  </InlineGraphLabel>
+                );
+              })}
+              {shapes.map((shape) => {
+                const target: ObjectTarget = { kind: "shape", id: shape.id };
+                if (!shouldShowOverlay(target, shape.showLabel)) return null;
+                const bounds = getShapeBounds(shape);
+                const active = isOverlayActive(target);
+                return (
+                  <InlineGraphLabel
+                    active={active}
+                    color={shape.color}
+                    key={`shape-label-${shape.id}`}
+                    label={shape.showLabel ? formatShapeLabel(shape) : "Show label"}
+                    onHide={() => updateLabelVisibility(target, false)}
+                    onPointerDown={() => setSelectedObject(target)}
+                    onShow={() => updateLabelVisibility(target, true)}
+                    showLabel={shape.showLabel}
+                    style={getLabelStyle(
+                      getCanvasPoint({
+                        id: 0,
+                        x: bounds.x + bounds.width / 2,
+                        y: bounds.y + bounds.height,
+                      })
+                    )}
+                  >
+                    <ShapeEditor
+                      shape={shape}
+                      onChange={(next) => updateShapeSize(shape.id, next)}
+                    />
+                  </InlineGraphLabel>
+                );
+              })}
+              {measures.map((measure) => {
+                const target: ObjectTarget = { kind: "measure", id: measure.id };
+                if (!shouldShowOverlay(target, measure.showLabel)) return null;
+                const a = getCanvasPoint(measure.a);
+                const b = getCanvasPoint(measure.b);
+                const active = isOverlayActive(target);
+                return (
+                  <InlineGraphLabel
+                    active={active}
+                    color={measure.color}
+                    key={`measure-label-${measure.id}`}
+                    label={measure.showLabel ? formatMeasureLabel(measure) : "Show label"}
+                    onHide={() => updateLabelVisibility(target, false)}
+                    onPointerDown={() => setSelectedObject(target)}
+                    onShow={() => updateLabelVisibility(target, true)}
+                    showLabel={measure.showLabel}
+                    style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
+                  >
+                    <MeasureDetails measure={measure} />
+                  </InlineGraphLabel>
+                );
+              })}
+            </>
+          )}
         </div>
       </section>
       <ScientificCalculator
@@ -2650,208 +3223,6 @@ const getGridStroke = (index: number) => {
   if (index % 4 === 0) return "#9a9a9a";
   if (index % 2 === 0) return "#b8b8b8";
   return "#dedede";
-};
-
-const getToolTitle = (tool: Tool) => {
-  if (tool === "plot") return "Plot mode";
-  if (tool === "line") return "Line mode";
-  if (tool === "curve") return "Curve mode";
-  if (tool === "rectangle") return "Rectangle mode";
-  if (tool === "square") return "Square mode";
-  if (tool === "measure") return "Distance mode";
-  return "Pan mode";
-};
-
-const getToolHelp = (tool: Tool, draftCount: number) => {
-  if (tool === "plot") {
-    return "Click to place a point. Hold and drag on empty space to draw a line.";
-  }
-  if (tool === "line") {
-    return draftCount === 0
-      ? "Click two endpoints, or hold and drag to draw a line."
-      : "Click the second endpoint. Drag endpoints later to change the equation.";
-  }
-  if (tool === "curve") {
-    return `Click ${3 - draftCount} more control point${
-      3 - draftCount === 1 ? "" : "s"
-    }. Drag controls later to change the equation.`;
-  }
-  if (tool === "rectangle") {
-    return draftCount === 0
-      ? "Hold and drag to draw a rectangle, or click two opposite corners."
-      : "Click the opposite corner to finish the rectangle.";
-  }
-  if (tool === "square") {
-    return draftCount === 0
-      ? "Hold and drag to draw a square, or click two opposite corners."
-      : "Click the opposite corner to finish the square.";
-  }
-  if (tool === "measure") {
-    return draftCount === 0
-      ? "Click two points, or hold and drag to draw a dotted distance marker."
-      : "Click the second point to finish the distance marker.";
-  }
-  return "Left click objects to select and edit. Right click drag to move around.";
-};
-
-const getDataInputLabel = (style: DataPlotStyle) => {
-  if (style === "scatter" || style === "scatter-line") {
-    return "Coordinate values: (x_coordinate, y_coordinate)";
-  }
-  if (style === "bar") {
-    return "Bar values: (x_position, value)";
-  }
-  return "Line values: (x_coordinate, y_coordinate)";
-};
-
-const getDataInputPlaceholder = (style: DataPlotStyle) => {
-  if (style === "bar") return "(1, 12)\n(2, 18)\n(3, 9)";
-  return "(1, 2)\n(2, 4)\n(3, 6)";
-};
-
-const formatNumber = (value: number) => {
-  const rounded = roundCoordinate(value);
-  return `${rounded}`;
-};
-
-const formatSignedTerm = (coefficient: number, variable: string) => {
-  if (Math.abs(coefficient) < 0.000001) return "";
-  const sign = coefficient < 0 ? " - " : " + ";
-  const amount = Math.abs(roundCoordinate(coefficient));
-  const number = amount === 1 && variable ? "" : `${amount}`;
-  return `${sign}${number}${variable}`;
-};
-
-type LineParts =
-  | { vertical: true; x: number }
-  | { vertical: false; m: number; b: number };
-
-const getLineParts = (line: GraphLine): LineParts => {
-  const dx = line.b.x - line.a.x;
-  const dy = line.b.y - line.a.y;
-  if (Math.abs(dx) < 0.000001) {
-    return { vertical: true, x: line.a.x };
-  }
-  const m = dy / dx;
-  const b = line.a.y - m * line.a.x;
-  return { vertical: false, m, b };
-};
-
-const formatLineEquation = (line: GraphLine) => {
-  const parts = getLineParts(line);
-  if (parts.vertical) return `x = ${formatNumber(parts.x)}`;
-
-  const m = roundCoordinate(parts.m);
-  const b = roundCoordinate(parts.b);
-  let equation = "y = ";
-  if (Math.abs(m) < 0.000001) {
-    equation += "0";
-  } else if (m === 1) {
-    equation += "x";
-  } else if (m === -1) {
-    equation += "-x";
-  } else {
-    equation += `${m}x`;
-  }
-
-  if (Math.abs(b) >= 0.000001) {
-    equation += b < 0 ? ` - ${Math.abs(b)}` : ` + ${b}`;
-  }
-  return equation;
-};
-
-const getQuadraticCoefficients = (curve: GraphCurve) => {
-  const { a: p1, b: p2, c: p3 } = curve;
-  const d =
-    (p1.x - p2.x) *
-    (p1.x - p3.x) *
-    (p2.x - p3.x);
-
-  if (Math.abs(d) < 0.000001) return null;
-
-  const a =
-    (p3.x * (p2.y - p1.y) +
-      p2.x * (p1.y - p3.y) +
-      p1.x * (p3.y - p2.y)) /
-    d;
-  const b =
-    (p3.x ** 2 * (p1.y - p2.y) +
-      p2.x ** 2 * (p3.y - p1.y) +
-      p1.x ** 2 * (p2.y - p3.y)) /
-    d;
-  const c =
-    (p2.x * p3.x * (p2.x - p3.x) * p1.y +
-      p3.x * p1.x * (p3.x - p1.x) * p2.y +
-      p1.x * p2.x * (p1.x - p2.x) * p3.y) /
-    d;
-
-  return { a, b, c };
-};
-
-const formatCurveEquation = (curve: GraphCurve) => {
-  const coefficients = getQuadraticCoefficients(curve);
-  if (!coefficients) return "Need 3 different x-values";
-
-  const a = roundCoordinate(coefficients.a);
-  const b = roundCoordinate(coefficients.b);
-  const c = roundCoordinate(coefficients.c);
-
-  let equation = "y = ";
-  if (Math.abs(a) < 0.000001) {
-    equation += "0";
-  } else if (a === 1) {
-    equation += "x^2";
-  } else if (a === -1) {
-    equation += "-x^2";
-  } else {
-    equation += `${a}x^2`;
-  }
-
-  equation += formatSignedTerm(b, "x");
-  if (Math.abs(c) >= 0.000001) {
-    equation += c < 0 ? ` - ${Math.abs(c)}` : ` + ${c}`;
-  }
-
-  return equation;
-};
-
-const getShapeBounds = (shape: Pick<GraphShape, "a" | "b">) => {
-  const x = Math.min(shape.a.x, shape.b.x);
-  const y = Math.min(shape.a.y, shape.b.y);
-  const width = Math.abs(shape.b.x - shape.a.x);
-  const height = Math.abs(shape.b.y - shape.a.y);
-  return { x, y, width, height };
-};
-
-const formatShapeLabel = (shape: GraphShape) => {
-  const bounds = getShapeBounds(shape);
-  if (shape.type === "square") {
-    return `square: side ${formatNumber(bounds.width)}`;
-  }
-  return `rectangle: ${formatNumber(bounds.width)} x ${formatNumber(bounds.height)}`;
-};
-
-const getDistance = (a: GraphPoint, b: GraphPoint) =>
-  Math.hypot(b.x - a.x, b.y - a.y);
-
-const formatMeasureLabel = (measure: GraphMeasure) =>
-  `d = ${formatNumber(getDistance(measure.a, measure.b))}`;
-
-const getObjectTitle = (target: ObjectTarget) => {
-  if (target.kind === "line") return "Line";
-  if (target.kind === "curve") return "Curve";
-  if (target.kind === "shape") return "Shape";
-  return "Distance";
-};
-
-const isTypingTarget = (target: EventTarget | null) => {
-  if (!(target instanceof HTMLElement)) return false;
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    target.isContentEditable
-  );
 };
 
 const InlineGraphLabel = ({
@@ -3396,163 +3767,6 @@ const formatTick = (value: number) => {
   return `${rounded}`;
 };
 
-const parseDataValues = (
-  input: string
-): { ok: true; values: DataValue[] } | { ok: false; message: string } => {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return {
-      ok: false,
-      message: "Enter at least one x, y pair. Example: 1, 2",
-    };
-  }
-
-  const coordinatePairValues = parseCoordinatePairValues(trimmed);
-  if (coordinatePairValues.length > 0) {
-    return { ok: true, values: coordinatePairValues };
-  }
-
-  const jsonValues = parseJsonDataValues(trimmed);
-  if (jsonValues.length > 0) return { ok: true, values: jsonValues };
-
-  const rows = trimmed
-    .split(/\r?\n/)
-    .map((row) => row.trim())
-    .filter(Boolean)
-    .map(splitDataRow);
-
-  const numericRows = rows
-    .map((row) => row.map(readNumberFromCell))
-    .filter((row) => row.some((value) => value !== null));
-  const maxColumns = Math.max(...numericRows.map((row) => row.length), 0);
-  const columnCounts = Array.from({ length: maxColumns }, (_, column) =>
-    numericRows.filter((row) => row[column] !== null).length
-  );
-  const bestColumns = columnCounts
-    .map((count, column) => ({ count, column }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count || a.column - b.column);
-  const xColumn = bestColumns[0]?.column ?? -1;
-  const yColumn = bestColumns[1]?.column ?? -1;
-  const values: DataValue[] = [];
-
-  numericRows.forEach((row, index) => {
-    const xValue = row[xColumn];
-    const yValue = row[yColumn];
-    if (
-      xColumn >= 0 &&
-      yColumn >= 0 &&
-      typeof xValue === "number" &&
-      typeof yValue === "number"
-    ) {
-      values.push({
-        x: roundCoordinate(xValue),
-        y: roundCoordinate(yValue),
-      });
-      return;
-    }
-
-    const numericCells = row.filter((value): value is number => value !== null);
-    if (numericCells.length >= 2) {
-      values.push({
-        x: roundCoordinate(numericCells[0]),
-        y: roundCoordinate(numericCells[1]),
-      });
-      return;
-    }
-
-    if (numericCells.length === 1) {
-      values.push({
-        x: index,
-        y: roundCoordinate(numericCells[0]),
-      });
-    }
-  });
-
-  if (values.length === 0) {
-    return { ok: false, message: "I could not find numeric data in that input." };
-  }
-
-  return { ok: true, values };
-};
-
-const numberPattern = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[-+]?\\d+)?";
-
-const parseCoordinatePairValues = (input: string) => {
-  const pairPattern = new RegExp(
-    `\\(\\s*(${numberPattern})\\s*,\\s*(${numberPattern})\\s*\\)`,
-    "gi"
-  );
-  const values: DataValue[] = [];
-  let match = pairPattern.exec(input);
-  while (match) {
-    values.push({
-      x: roundCoordinate(Number(match[1])),
-      y: roundCoordinate(Number(match[2])),
-    });
-    match = pairPattern.exec(input);
-  }
-  return values;
-};
-
-const parseJsonDataValues = (input: string) => {
-  try {
-    const parsed = JSON.parse(input) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const values: DataValue[] = [];
-    parsed.forEach((item, index) => {
-      if (Array.isArray(item)) {
-        const numeric = item
-          .map((value) => readNumberFromCell(String(value)))
-          .filter((value): value is number => value !== null);
-        if (numeric.length >= 2) {
-          values.push({ x: roundCoordinate(numeric[0]), y: roundCoordinate(numeric[1]) });
-        } else if (numeric.length === 1) {
-          values.push({ x: index, y: roundCoordinate(numeric[0]) });
-        }
-        return;
-      }
-
-      if (item && typeof item === "object") {
-        const record = item as Record<string, unknown>;
-        const entries = Object.entries(record);
-        const xEntry =
-          entries.find(([key]) => /^x$|time|date|year/i.test(key)) ??
-          entries.find(([, value]) => readNumberFromCell(String(value)) !== null);
-        const yEntry =
-          entries.find(([key]) => /^y$|value|amount|price|count|score/i.test(key)) ??
-          entries.find(
-            ([key, value]) =>
-              key !== xEntry?.[0] && readNumberFromCell(String(value)) !== null
-          );
-        const x = xEntry ? readNumberFromCell(String(xEntry[1])) : null;
-        const y = yEntry ? readNumberFromCell(String(yEntry[1])) : null;
-        if (x !== null && y !== null) {
-          values.push({ x: roundCoordinate(x), y: roundCoordinate(y) });
-        } else if (y !== null) {
-          values.push({ x: index, y: roundCoordinate(y) });
-        }
-      }
-    });
-    return values;
-  } catch {
-    return [];
-  }
-};
-
-const splitDataRow = (row: string) => {
-  const matches = row.match(/"[^"]*"|'[^']*'|[^,\t; ]+/g);
-  return matches?.map((cell) => cell.replace(/^["']|["']$/g, "")) ?? [];
-};
-
-const readNumberFromCell = (cell: string) => {
-  const normalized = cell.trim().replace(/,/g, "");
-  const match = normalized.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/i);
-  if (!match) return null;
-  const value = Number(match[0]);
-  return Number.isFinite(value) ? value : null;
-};
-
 const drawCalculatorGuide = (
   context: CanvasRenderingContext2D,
   guide: CalculatorGuide,
@@ -3728,52 +3942,6 @@ const isSelectedObject = (
   kind: ObjectTarget["kind"],
   id: number
 ) => selected?.kind === kind && selected.id === id;
-
-const distanceToSegment = (
-  point: { x: number; y: number },
-  a: { x: number; y: number },
-  b: { x: number; y: number }
-) => {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  if (dx === 0 && dy === 0) {
-    return Math.hypot(point.x - a.x, point.y - a.y);
-  }
-
-  const t = clamp(
-    ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy),
-    0,
-    1
-  );
-  const projection = {
-    x: a.x + t * dx,
-    y: a.y + t * dy,
-  };
-  return Math.hypot(point.x - projection.x, point.y - projection.y);
-};
-
-const closestPointOnSegmentWorld = (
-  point: { x: number; y: number },
-  a: GraphPoint,
-  b: GraphPoint
-): GraphPoint => {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  if (dx === 0 && dy === 0) {
-    return { id: 0, x: a.x, y: a.y };
-  }
-
-  const t = clamp(
-    ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy),
-    0,
-    1
-  );
-  return {
-    id: 0,
-    x: roundCoordinate(a.x + t * dx),
-    y: roundCoordinate(a.y + t * dy),
-  };
-};
 
 const drawHandle = (
   context: CanvasRenderingContext2D,
