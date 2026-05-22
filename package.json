@@ -9,9 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "^5.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "three": "^0.184.0",
     "typescript": "^5.8.3",
     "vite": "^7.0.0"
   },

@@ -5,6 +5,63 @@ export type GraphPoint = {
   color?: string;
 };
 
+export type ViewState = {
+  offsetX: number;
+  offsetY: number;
+  pixelsPerUnit: number;
+};
+
+export type Tool =
+  | "plot"
+  | "line"
+  | "curve"
+  | "rectangle"
+  | "square"
+  | "measure"
+  | "pan";
+
+export type WorkspaceMode = "2d" | "surface";
+export type RendererMode = "auto" | "canvas" | "gpu";
+export type SurfaceTool =
+  | "select"
+  | "pen"
+  | "pencil"
+  | "cutter"
+  | "fill"
+  | "paint"
+  | "scale"
+  | "stretch"
+  | "shrink"
+  | "replicate"
+  | "data";
+
+export type SurfaceVector3 = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+export type SurfaceShape = {
+  id: number;
+  name: string;
+  equation: string;
+  color: string;
+  position: SurfaceVector3;
+  scale: SurfaceVector3;
+};
+
+export type SurfaceStroke = {
+  id: number;
+  color: string;
+  opacity: number;
+  points: SurfaceVector3[];
+};
+
+export type SurfaceDataPoint = SurfaceVector3 & {
+  id: number;
+  color: string;
+};
+
 export type GraphLine = {
   id: number;
   a: GraphPoint;
