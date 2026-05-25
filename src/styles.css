@@ -246,6 +246,71 @@ button:disabled {
   gap: 6px;
 }
 
+.tool-dropdown-grid {
+  align-items: start;
+}
+
+.tool-dropdown-cell {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tool-dropdown-cell > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tool-options {
+  display: grid;
+  gap: 6px;
+  max-height: 0;
+  overflow: hidden;
+  border: 1px solid #dce4e8;
+  border-radius: 7px;
+  background: #f7fafb;
+  color: #4a433d;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0;
+  padding: 0 7px;
+  transform: translateY(-5px);
+  transition:
+    max-height 180ms ease,
+    opacity 150ms ease,
+    padding 180ms ease,
+    transform 180ms ease;
+  visibility: hidden;
+}
+
+.tool-options.open {
+  max-height: 170px;
+  opacity: 1;
+  padding: 7px;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.tool-options button {
+  min-height: 28px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.tool-options:not(.open) button,
+.tool-options:not(.open) input {
+  pointer-events: none;
+}
+
+.tool-options code {
+  overflow-wrap: anywhere;
+  color: #28666e;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .segmented button.active {
   border-color: #28666e;
   background: linear-gradient(145deg, #2f7681, #235f68);
@@ -1458,6 +1523,16 @@ textarea {
   background: linear-gradient(145deg, #365880, #284766);
   color: #ffffff;
   box-shadow: 0 0 0 1px rgba(77, 170, 252, 0.24);
+}
+
+.tool-options {
+  border-color: var(--ui-border);
+  background: #25282d;
+  color: var(--ui-muted);
+}
+
+.tool-options code {
+  color: #7cc7ff;
 }
 
 .color-tools > span,

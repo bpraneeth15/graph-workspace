@@ -25,29 +25,19 @@ export const getToolHelp = (tool: Tool, draftCount: number) => {
     return "Click to place a point. Hold and drag on empty space to draw a line.";
   }
   if (tool === "line") {
-    return draftCount === 0
-      ? "Click two endpoints, or hold and drag to draw a line."
-      : "Click the second endpoint. Drag endpoints later to change the equation.";
+    return "Hold and drag to draw a line. Drag endpoints later to change the equation.";
   }
   if (tool === "curve") {
-    return `Click ${3 - draftCount} more control point${
-      3 - draftCount === 1 ? "" : "s"
-    }. Drag controls later to change the equation.`;
+    return "Hold and drag workflow is used for drawing tools. Curve drag creation is next.";
   }
   if (tool === "rectangle") {
-    return draftCount === 0
-      ? "Hold and drag to draw a rectangle, or click two opposite corners."
-      : "Click the opposite corner to finish the rectangle.";
+    return "Hold and drag to draw a rectangle.";
   }
   if (tool === "square") {
-    return draftCount === 0
-      ? "Hold and drag to draw a square, or click two opposite corners."
-      : "Click the opposite corner to finish the square.";
+    return "Hold and drag to draw a square.";
   }
   if (tool === "measure") {
-    return draftCount === 0
-      ? "Click two points, or hold and drag to draw a dotted distance marker."
-      : "Click the second point to finish the distance marker.";
+    return "Hold and drag to draw a dotted distance marker.";
   }
   return "Left click objects to select and edit. Right click drag to move around.";
 };
