@@ -114,6 +114,19 @@ type HoverSnapPoint = {
   target: ObjectTarget;
 };
 
+type LeastSquaresResidual = {
+  point: GraphPoint;
+  fittedY: number;
+  residual: number;
+  squared: number;
+};
+
+type LeastSquaresSummary = {
+  line: GraphLine;
+  residuals: LeastSquaresResidual[];
+  sum: number;
+};
+
 type DragState = {
   pointerId: number;
   startX: number;
@@ -192,11 +205,13 @@ const App = () => {
   const [dataPlots, setDataPlots] = useState<DataPlot[]>([]);
   const [draftPoints, setDraftPoints] = useState<GraphPoint[]>([]);
   const [tool, setTool] = useState<Tool>("plot");
+  const [openToolMenu, setOpenToolMenu] = useState<Tool>("plot");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("2d");
   const [selectedColor, setSelectedColor] = useState(COLOR_SWATCHES[0]);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [snapStep, setSnapStep] = useState(0.1);
   const [connectPoints, setConnectPoints] = useState(false);
+  const [showLeastSquares, setShowLeastSquares] = useState(false);
   const [cursor, setCursor] = useState<GraphPoint | null>(null);
   const [manualX, setManualX] = useState("");
   const [manualY, setManualY] = useState("");
@@ -256,6 +271,7 @@ const App = () => {
 
   const selectTool = (nextTool: Tool) => {
     setTool(nextTool);
+    setOpenToolMenu(nextTool);
     setDraftPoints([]);
   };
 
@@ -398,6 +414,12 @@ const App = () => {
   const canUndo = historyVersion >= 0 && undoStack.current.length > 0;
   const canRedo = historyVersion >= 0 && redoStack.current.length > 0;
   const zoomPercent = `${((view.pixelsPerUnit - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)) * 100}%`;
+  const fitDataPoints = collectLeastSquaresPoints(points, dataPlots);
+  const activeFitLine =
+    selectedObject?.kind === "line"
+      ? lines.find((line) => line.id === selectedObject.id) ?? null
+      : lines[0] ?? null;
+  const leastSquaresSummary = getLeastSquaresSummary(activeFitLine, fitDataPoints);
 
   const screenToWorld = (screenX: number, screenY: number, currentView = view) => {
     const canvas = canvasRef.current;
@@ -486,6 +508,24 @@ const App = () => {
     };
   };
 
+  const getGeometryPoint = (screenX: number, screenY: number) => {
+    const plottedPoint = findNearestPlottedPoint(screenX, screenY);
+    if (plottedPoint) {
+      return {
+        id: 0,
+        x: plottedPoint.x,
+        y: plottedPoint.y,
+      };
+    }
+
+    const world = snapPoint(screenToWorld(screenX, screenY));
+    return {
+      id: 0,
+      x: world.x,
+      y: world.y,
+    };
+  };
+
   const addWorldPoint = (x: number, y: number) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     pushHistory();
@@ -525,16 +565,18 @@ const App = () => {
   const addLineFromPoints = (a: GraphPoint, b: GraphPoint) => {
     if (Math.hypot(a.x - b.x, a.y - b.y) < 0.000001) return;
     pushHistory();
+    const id = nextLineId.current++;
     setLines((current) => [
       ...current,
       {
-        id: nextLineId.current++,
+        id,
         a,
         b,
         color: selectedColor,
         showLabel: true,
       },
     ]);
+    setSelectedObject({ kind: "line", id });
   };
 
   const addMeasureFromPoints = (a: GraphPoint, b: GraphPoint) => {
@@ -1477,19 +1519,30 @@ const App = () => {
     stopPanInertia();
     event.currentTarget.setPointerCapture(event.pointerId);
     const isAuxiliaryPanGesture = (event.buttons & 6) !== 0;
+    const canDragExistingGeometry = tool === "pan";
+    const canDragPointInPlotMode = tool === "plot";
+    const canTargetObjectForPlot = tool === "plot";
     const rawTarget =
-      !isAuxiliaryPanGesture
+      !isAuxiliaryPanGesture && (canDragExistingGeometry || canDragPointInPlotMode)
         ? findNearestHandle(event.clientX, event.clientY)
         : null;
-    const isMeasuringFromPlottedPoint = tool === "measure" && rawTarget?.kind === "point";
-    const target = isMeasuringFromPlottedPoint ? null : rawTarget;
+    const target =
+      canDragExistingGeometry ||
+      (canDragPointInPlotMode &&
+        (rawTarget?.kind === "point" || rawTarget?.kind === "data"))
+        ? rawTarget
+        : null;
     const objectTarget =
-      !isAuxiliaryPanGesture && !target && !isMeasuringFromPlottedPoint
+      !isAuxiliaryPanGesture &&
+      !target &&
+      (canDragExistingGeometry || canTargetObjectForPlot)
         ? findNearestObject(event.clientX, event.clientY)
         : null;
     const startWorld =
       tool === "measure"
         ? getMeasurePoint(event.clientX, event.clientY)
+        : tool === "line" || tool === "curve" || tool === "rectangle" || tool === "square"
+          ? getGeometryPoint(event.clientX, event.clientY)
         : {
             id: 0,
             ...snapPoint(screenToWorld(event.clientX, event.clientY)),
@@ -1499,7 +1552,7 @@ const App = () => {
     } else {
       setSelectedObject(objectTarget);
     }
-    if (objectTarget || (target && target.kind !== "point" && target.kind !== "data")) {
+    if (canDragExistingGeometry && (objectTarget || (target && target.kind !== "point" && target.kind !== "data"))) {
       const rect = event.currentTarget.getBoundingClientRect();
       setHoverMenu({
         target:
@@ -1521,7 +1574,7 @@ const App = () => {
       moved: false,
       mode: target
         ? "handle"
-        : objectTarget && tool !== "plot"
+        : objectTarget && canDragExistingGeometry
           ? "object"
           : isAuxiliaryPanGesture
             ? "pan"
@@ -1614,7 +1667,7 @@ const App = () => {
     }
 
     if (drag.mode === "draw-line") {
-      const nextPoint = snapPoint(screenToWorld(event.clientX, event.clientY));
+      const nextPoint = getGeometryPoint(event.clientX, event.clientY);
       setDraftPoints([
         drag.startWorld,
         { id: 0, x: nextPoint.x, y: nextPoint.y },
@@ -1626,7 +1679,7 @@ const App = () => {
     }
 
     if (drag.mode === "draw-shape" && (tool === "rectangle" || tool === "square")) {
-      const nextPoint = snapPoint(screenToWorld(event.clientX, event.clientY));
+      const nextPoint = getGeometryPoint(event.clientX, event.clientY);
       setDraftPoints([
         drag.startWorld,
         normalizeShapeEnd(
@@ -1662,7 +1715,7 @@ const App = () => {
     }
 
     if (drag && drag.pointerId === event.pointerId && drag.mode === "draw-line") {
-      const endWorld = snapPoint(screenToWorld(event.clientX, event.clientY));
+      const endWorld = getGeometryPoint(event.clientX, event.clientY);
       addLineFromPoints(drag.startWorld, { id: 0, x: endWorld.x, y: endWorld.y });
       setDraftPoints([]);
       dragRef.current = null;
@@ -1682,7 +1735,7 @@ const App = () => {
       drag.mode === "draw-shape" &&
       (tool === "rectangle" || tool === "square")
     ) {
-      const endWorld = snapPoint(screenToWorld(event.clientX, event.clientY));
+      const endWorld = getGeometryPoint(event.clientX, event.clientY);
       addShapeFromPoints(tool, drag.startWorld, { id: 0, x: endWorld.x, y: endWorld.y });
       setDraftPoints([]);
       dragRef.current = null;
@@ -1701,7 +1754,7 @@ const App = () => {
         }
       }
       if (tool === "line" || tool === "curve" || tool === "rectangle" || tool === "square" || tool === "measure") {
-        addDraftGeometryPoint(event.clientX, event.clientY);
+        setDraftPoints([]);
       }
     }
     dragRef.current = null;
@@ -1828,6 +1881,8 @@ const App = () => {
         selectedColor,
         tool,
         selectedObject,
+        showLeastSquares,
+        leastSquares: leastSquaresSummary,
       });
     };
 
@@ -1835,7 +1890,7 @@ const App = () => {
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
+  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1855,9 +1910,11 @@ const App = () => {
         selectedColor,
         tool,
         selectedObject,
+        showLeastSquares,
+        leastSquares: leastSquaresSummary,
       });
     }
-  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, lines, measures, points, selectedColor, selectedObject, shapes, tool, view]);
+  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(
     () => () => {
@@ -2024,56 +2081,80 @@ const App = () => {
         {workspaceMode === "2d" ? (
           <section className="control-section">
             <h2>Tool</h2>
-            <div className="segmented">
-              <button
-                className={tool === "plot" ? "active" : ""}
-                onClick={() => selectTool("plot")}
-                type="button"
-              >
-                Plot
-              </button>
-              <button
-                className={tool === "line" ? "active" : ""}
-                onClick={() => selectTool("line")}
-                type="button"
-              >
-                Line
-              </button>
-              <button
-                className={tool === "curve" ? "active" : ""}
-                onClick={() => selectTool("curve")}
-                type="button"
-              >
-                Curve
-              </button>
-              <button
-                className={tool === "rectangle" ? "active" : ""}
-                onClick={() => selectTool("rectangle")}
-                type="button"
-              >
-                Rect
-              </button>
-              <button
-                className={tool === "square" ? "active" : ""}
-                onClick={() => selectTool("square")}
-                type="button"
-              >
-                Square
-              </button>
-              <button
-                className={tool === "measure" ? "active" : ""}
-                onClick={() => selectTool("measure")}
-                type="button"
-              >
-                Distance
-              </button>
-              <button
-                className={tool === "pan" ? "active" : ""}
-                onClick={() => selectTool("pan")}
-                type="button"
-              >
-                Pan
-              </button>
+            <div className="segmented tool-dropdown-grid">
+              {([
+                ["plot", "Plot"],
+                ["line", "Line"],
+                ["curve", "Curve"],
+                ["rectangle", "Rect"],
+                ["square", "Square"],
+                ["measure", "Distance"],
+                ["pan", "Pan"],
+              ] as Array<[Tool, string]>).map(([value, label]) => (
+                <div
+                  className={
+                    openToolMenu === value
+                      ? "tool-dropdown-cell open"
+                      : "tool-dropdown-cell"
+                  }
+                  key={value}
+                >
+                  <button
+                    className={tool === value ? "active" : ""}
+                    onClick={() => selectTool(value)}
+                    type="button"
+                  >
+                    <span>{label}</span>
+                    <span aria-hidden="true">v</span>
+                  </button>
+                  <div
+                    className={
+                      openToolMenu === value
+                        ? "tool-options open"
+                        : "tool-options"
+                    }
+                    aria-hidden={openToolMenu !== value}
+                  >
+                      {value === "square" ? (
+                        <>
+                          <label className="toggle">
+                            <input
+                              checked={showLeastSquares}
+                              onChange={(event) =>
+                                setShowLeastSquares(event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                            <span>Least-squares squares</span>
+                          </label>
+                          {showLeastSquares && leastSquaresSummary ? (
+                            <>
+                              <code>
+                                Σ(yi - ŷi)^2 = {formatNumber(leastSquaresSummary.sum)}
+                              </code>
+                              <span>
+                                {leastSquaresSummary.residuals.length} point
+                                {leastSquaresSummary.residuals.length === 1 ? "" : "s"} against{" "}
+                                {formatLineEquation(leastSquaresSummary.line)}
+                              </span>
+                            </>
+                          ) : (
+                            <span>
+                              Check to show residual squares, formula, and SSE value.
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <span>{label} options</span>
+                          <button disabled type="button">
+                            More settings soon
+                          </button>
+                        </>
+                      )}
+                  </div>
+                </div>
+              ))}
             </div>
             <div className="color-tools">
               <span>{selectedObject ? "Selected color" : "Color"}</span>
@@ -3448,6 +3529,8 @@ const drawGraph = (
     selectedColor: string;
     tool: Tool;
     selectedObject: ObjectTarget | null;
+    showLeastSquares: boolean;
+    leastSquares: LeastSquaresSummary | null;
   }
 ) => {
   const context = canvas.getContext("2d");
@@ -3538,6 +3621,16 @@ const drawGraph = (
 
   if (graph.calculatorGuide) {
     drawCalculatorGuide(context, graph.calculatorGuide, width, height, toScreen);
+  }
+
+  if (graph.showLeastSquares && graph.leastSquares) {
+    drawLeastSquaresSquares(
+      context,
+      graph.leastSquares,
+      toScreen,
+      width,
+      height
+    );
   }
 
   graph.shapes.forEach((shape, index) => {
@@ -3765,6 +3858,169 @@ const drawGraph = (
 const formatTick = (value: number) => {
   const rounded = roundCoordinate(value);
   return `${rounded}`;
+};
+
+const collectLeastSquaresPoints = (
+  points: GraphPoint[],
+  dataPlots: DataPlot[]
+): GraphPoint[] => [
+  ...points.map((point) => ({ ...point })),
+  ...dataPlots.flatMap((plot) =>
+    plot.values.map((value, index) => ({
+      id: index,
+      x: value.x,
+      y: value.y,
+      color: plot.color,
+    }))
+  ),
+];
+
+const getLeastSquaresSummary = (
+  line: GraphLine | null,
+  fitPoints: GraphPoint[]
+): LeastSquaresSummary | null => {
+  if (!line || fitPoints.length === 0) return null;
+  const parts = getLineParts(line);
+  if (parts.vertical) return null;
+
+  const residuals = fitPoints
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map((point) => {
+      const fittedY = parts.m * point.x + parts.b;
+      const residual = point.y - fittedY;
+      return {
+        point,
+        fittedY,
+        residual,
+        squared: residual ** 2,
+      };
+    });
+
+  if (residuals.length === 0) return null;
+  return {
+    line,
+    residuals,
+    sum: residuals.reduce((total, item) => total + item.squared, 0),
+  };
+};
+
+const drawLeastSquaresSquares = (
+  context: CanvasRenderingContext2D,
+  summary: LeastSquaresSummary,
+  toScreen: (point: GraphPoint) => { x: number; y: number },
+  width: number,
+  height: number
+) => {
+  const color = summary.line.color;
+  context.save();
+
+  summary.residuals.forEach((item, index) => {
+    const side = Math.abs(item.residual);
+    if (side < 0.000001) return;
+    const direction = item.residual >= 0 ? 1 : -1;
+    const dataPoint = item.point;
+    const fitPoint = { id: 0, x: dataPoint.x, y: item.fittedY };
+    const fitOffset = {
+      id: 0,
+      x: dataPoint.x + side * direction,
+      y: item.fittedY,
+    };
+    const dataOffset = {
+      id: 0,
+      x: dataPoint.x + side * direction,
+      y: dataPoint.y,
+    };
+
+    const a = toScreen(dataPoint);
+    const b = toScreen(fitPoint);
+    const c = toScreen(fitOffset);
+    const d = toScreen(dataOffset);
+
+    context.beginPath();
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.lineTo(c.x, c.y);
+    context.lineTo(d.x, d.y);
+    context.closePath();
+    context.fillStyle = withAlpha(color, 0.12);
+    context.strokeStyle = withAlpha(color, 0.62);
+    context.lineWidth = 1.6;
+    context.fill();
+    context.stroke();
+
+    context.beginPath();
+    context.setLineDash([5, 4]);
+    context.strokeStyle = withAlpha(color, 0.82);
+    context.lineWidth = 1.8;
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.stroke();
+    context.setLineDash([]);
+
+    context.beginPath();
+    context.strokeStyle = color;
+    context.lineWidth = 2.6;
+    context.moveTo(a.x, a.y);
+    context.lineTo(b.x, b.y);
+    context.lineTo(c.x, c.y);
+    context.stroke();
+
+    const screenSide = Math.hypot(c.x - b.x, c.y - b.y);
+    const center = {
+      x: (a.x + b.x + c.x + d.x) / 4,
+      y: (a.y + b.y + c.y + d.y) / 4,
+    };
+    const label = `A=${formatNumber(item.squared)}`;
+    context.font = "700 10px Inter, system-ui, sans-serif";
+    const labelWidth = context.measureText(label).width;
+    context.textBaseline = "middle";
+    context.fillStyle = "rgba(255, 255, 255, 0.88)";
+    if (screenSide > labelWidth + 8 && Math.abs(a.y - b.y) > 18) {
+      roundRect(context, center.x - labelWidth / 2 - 4, center.y - 9, labelWidth + 8, 18, 4);
+      context.fill();
+      context.strokeStyle = withAlpha(color, 0.42);
+      context.lineWidth = 1;
+      context.stroke();
+      context.fillStyle = "#24211e";
+      context.fillText(label, center.x - labelWidth / 2, center.y);
+    } else if (screenSide > 18) {
+      context.fillStyle = "#24211e";
+      context.fillText(label, center.x - labelWidth / 2, center.y);
+    }
+  });
+
+  drawLeastSquaresTag(context, summary, width, height);
+  context.restore();
+};
+
+const drawLeastSquaresTag = (
+  context: CanvasRenderingContext2D,
+  summary: LeastSquaresSummary,
+  width: number,
+  height: number
+) => {
+  const formula = `SSE = Σ(yi - ŷi)^2 = ${formatNumber(summary.sum)}`;
+  const detail = `ŷ = ${formatLineEquation(summary.line).replace("y = ", "")}`;
+  context.font = "700 12px Inter, system-ui, sans-serif";
+  const boxWidth = Math.max(
+    context.measureText(formula).width,
+    context.measureText(detail).width
+  ) + 18;
+  const boxHeight = 44;
+  const x = clamp(width - boxWidth - 16, 12, width - boxWidth - 12);
+  const y = clamp(16, 12, height - boxHeight - 12);
+
+  context.fillStyle = "rgba(255, 255, 255, 0.96)";
+  context.strokeStyle = summary.line.color;
+  context.lineWidth = 1.6;
+  roundRect(context, x, y, boxWidth, boxHeight, 6);
+  context.fill();
+  context.stroke();
+  context.fillStyle = "#24211e";
+  context.fillText(formula, x + 9, y + 10);
+  context.font = "600 11px Inter, system-ui, sans-serif";
+  context.fillStyle = "#5c534b";
+  context.fillText(detail, x + 9, y + 28);
 };
 
 const drawCalculatorGuide = (
