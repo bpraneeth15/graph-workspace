@@ -93,6 +93,7 @@ type GraphSnapshot = {
   shapes: GraphShape[];
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
+  canvasStrokes: CanvasStroke[];
 };
 
 type HandleTarget =
@@ -127,6 +128,31 @@ type LeastSquaresSummary = {
   sum: number;
 };
 
+type CanvasTool = "none" | "pencil" | "marker" | "eraser";
+
+type CanvasStroke = {
+  id: number;
+  color: string;
+  opacity: number;
+  width: number;
+  points: GraphPoint[];
+  tool: Exclude<CanvasTool, "none" | "eraser">;
+};
+
+type CanvasToolbarPosition = {
+  x: number;
+  y: number;
+};
+
+type CanvasToolbarDrag = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startLeft: number;
+  startTop: number;
+  moved: boolean;
+};
+
 type DragState = {
   pointerId: number;
   startX: number;
@@ -137,12 +163,22 @@ type DragState = {
   velocityX: number;
   velocityY: number;
   moved: boolean;
-  mode: "none" | "pan" | "handle" | "object" | "draw-line" | "draw-shape" | "draw-measure";
+  mode:
+    | "none"
+    | "pan"
+    | "handle"
+    | "object"
+    | "draw-line"
+    | "draw-shape"
+    | "draw-measure"
+    | "canvas-draw"
+    | "canvas-erase";
   startWorld: GraphPoint;
   historySnapshot?: GraphSnapshot;
   historyPushed: boolean;
   target?: HandleTarget;
   objectTarget?: ObjectTarget;
+  canvasStrokeId?: number;
 };
 
 
@@ -175,6 +211,10 @@ const cloneSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
     ...plot,
     values: plot.values.map((value) => ({ ...value })),
   })),
+  canvasStrokes: (snapshot.canvasStrokes ?? []).map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map(clonePoint),
+  })),
 });
 
 const App = () => {
@@ -192,6 +232,7 @@ const App = () => {
   const nextShapeId = useRef(1);
   const nextMeasureId = useRef(1);
   const nextDataPlotId = useRef(1);
+  const nextCanvasStrokeId = useRef(1);
   const nextSurfaceShapeId = useRef(2);
   const nextSurfaceStrokeId = useRef(1);
   const nextSurfaceDataPointId = useRef(1);
@@ -203,6 +244,7 @@ const App = () => {
   const [shapes, setShapes] = useState<GraphShape[]>([]);
   const [measures, setMeasures] = useState<GraphMeasure[]>([]);
   const [dataPlots, setDataPlots] = useState<DataPlot[]>([]);
+  const [canvasStrokes, setCanvasStrokes] = useState<CanvasStroke[]>([]);
   const [draftPoints, setDraftPoints] = useState<GraphPoint[]>([]);
   const [tool, setTool] = useState<Tool>("plot");
   const [openToolMenu, setOpenToolMenu] = useState<Tool>("plot");
@@ -212,6 +254,10 @@ const App = () => {
   const [snapStep, setSnapStep] = useState(SUBGRID_STEP);
   const [connectPoints, setConnectPoints] = useState(false);
   const [showLeastSquares, setShowLeastSquares] = useState(false);
+  const [canvasTool, setCanvasTool] = useState<CanvasTool>("none");
+  const [isCanvasToolbarCollapsed, setIsCanvasToolbarCollapsed] = useState(true);
+  const [canvasToolbarPosition, setCanvasToolbarPosition] =
+    useState<CanvasToolbarPosition>({ x: 74, y: 74 });
   const [cursor, setCursor] = useState<GraphPoint | null>(null);
   const [manualX, setManualX] = useState("");
   const [manualY, setManualY] = useState("");
@@ -346,6 +392,7 @@ const App = () => {
         shapes,
         measures,
         dataPlots,
+        canvasStrokes,
         surface: {
           selectedShapeId: selectedSurfaceShapeId,
           shapes: surfaceShapes,
@@ -372,6 +419,7 @@ const App = () => {
       shapes,
       measures,
       dataPlots,
+      canvasStrokes,
     });
 
   const restoreGraphSnapshot = (snapshot: GraphSnapshot) => {
@@ -382,6 +430,7 @@ const App = () => {
     setShapes(next.shapes);
     setMeasures(next.measures);
     setDataPlots(next.dataPlots);
+    setCanvasStrokes(next.canvasStrokes);
     setDraftPoints([]);
     setSelectedObject(null);
   };
@@ -1135,6 +1184,58 @@ const App = () => {
     );
   };
 
+  const updatePointDetails = (
+    pointId: number,
+    patch: Partial<Pick<GraphPoint, "x" | "y" | "color" | "label" | "showLabel">>
+  ) => {
+    pushHistory();
+    setPoints((current) =>
+      current.map((point) =>
+        point.id === pointId
+          ? {
+              ...point,
+              ...patch,
+              x:
+                patch.x === undefined || !Number.isFinite(patch.x)
+                  ? point.x
+                  : roundCoordinate(patch.x),
+              y:
+                patch.y === undefined || !Number.isFinite(patch.y)
+                  ? point.y
+                  : roundCoordinate(patch.y),
+            }
+          : point
+      )
+    );
+  };
+
+  const updateObjectLabel = (target: ObjectTarget, label: string) => {
+    pushHistory();
+    if (target.kind === "line") {
+      setLines((current) =>
+        current.map((line) => (line.id === target.id ? { ...line, label } : line))
+      );
+      return;
+    }
+    if (target.kind === "curve") {
+      setCurves((current) =>
+        current.map((curve) => (curve.id === target.id ? { ...curve, label } : curve))
+      );
+      return;
+    }
+    if (target.kind === "shape") {
+      setShapes((current) =>
+        current.map((shape) => (shape.id === target.id ? { ...shape, label } : shape))
+      );
+      return;
+    }
+    setMeasures((current) =>
+      current.map((measure) =>
+        measure.id === target.id ? { ...measure, label } : measure
+      )
+    );
+  };
+
   const updateLabelVisibility = (target: ObjectTarget, showLabel: boolean) => {
     pushHistory();
     if (target.kind === "line") {
@@ -1528,9 +1629,121 @@ const App = () => {
     });
   };
 
+  const getCanvasAnnotationPoint = (screenX: number, screenY: number): GraphPoint => {
+    const world = screenToWorld(screenX, screenY);
+    return {
+      id: 0,
+      x: roundCoordinate(world.x),
+      y: roundCoordinate(world.y),
+    };
+  };
+
+  const getCanvasStrokeStyle = (nextTool: CanvasTool) => ({
+    width: nextTool === "marker" ? 5 : 2,
+    opacity: nextTool === "marker" ? 0.36 : 0.95,
+  });
+
+  const appendCanvasStrokePoint = (strokeId: number, point: GraphPoint) => {
+    setCanvasStrokes((current) =>
+      current.map((stroke) => {
+        if (stroke.id !== strokeId) return stroke;
+        const previous = stroke.points[stroke.points.length - 1];
+        if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) < 0.003) {
+          return stroke;
+        }
+        return { ...stroke, points: [...stroke.points, point] };
+      })
+    );
+  };
+
+  const eraseCanvasStrokeAt = (screenX: number, screenY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const local = { x: screenX - rect.left, y: screenY - rect.top };
+    const eraseRadius = 14;
+
+    setCanvasStrokes((current) =>
+      current.filter((stroke) => {
+        if (stroke.points.length === 0) return false;
+        if (stroke.points.length === 1) {
+          const screen = worldToCanvas(stroke.points[0]);
+          return Math.hypot(screen.x - local.x, screen.y - local.y) > eraseRadius;
+        }
+
+        for (let index = 1; index < stroke.points.length; index += 1) {
+          const previous = worldToCanvas(stroke.points[index - 1]);
+          const next = worldToCanvas(stroke.points[index]);
+          if (distanceToSegment(local, previous, next) <= eraseRadius) {
+            return false;
+          }
+        }
+        return true;
+      })
+    );
+  };
+
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     stopPanInertia();
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (canvasTool !== "none" && (event.buttons & 1) === 1) {
+      const startPoint = getCanvasAnnotationPoint(event.clientX, event.clientY);
+      pushHistory();
+      setSelectedObject(null);
+      setHoverMenu(null);
+      setHoverSnapPoint(null);
+
+      if (canvasTool === "eraser") {
+        eraseCanvasStrokeAt(event.clientX, event.clientY);
+        dragRef.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          lastX: event.clientX,
+          lastY: event.clientY,
+          lastMoveTime: event.timeStamp,
+          velocityX: 0,
+          velocityY: 0,
+          moved: false,
+          mode: "canvas-erase",
+          startWorld: startPoint,
+          historyPushed: true,
+        };
+        updateCursor(event.clientX, event.clientY);
+        return;
+      }
+
+      const strokeId = nextCanvasStrokeId.current++;
+      const style = getCanvasStrokeStyle(canvasTool);
+      setCanvasStrokes((current) => [
+        ...current,
+        {
+          id: strokeId,
+          color: selectedColor,
+          opacity: style.opacity,
+          width: style.width,
+          points: [startPoint],
+          tool: canvasTool,
+        },
+      ]);
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        lastMoveTime: event.timeStamp,
+        velocityX: 0,
+        velocityY: 0,
+        moved: false,
+        mode: "canvas-draw",
+        startWorld: startPoint,
+        historyPushed: true,
+        canvasStrokeId: strokeId,
+      };
+      updateCursor(event.clientX, event.clientY);
+      return;
+    }
     const isAuxiliaryPanGesture = (event.buttons & 6) !== 0;
     const canDragExistingGeometry = tool === "pan";
     const canDragPointInPlotMode = tool === "plot";
@@ -1629,6 +1842,23 @@ const App = () => {
       drag.moved = true;
     }
 
+    if (drag.mode === "canvas-draw" && drag.canvasStrokeId) {
+      appendCanvasStrokePoint(
+        drag.canvasStrokeId,
+        getCanvasAnnotationPoint(event.clientX, event.clientY)
+      );
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      return;
+    }
+
+    if (drag.mode === "canvas-erase") {
+      eraseCanvasStrokeAt(event.clientX, event.clientY);
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      return;
+    }
+
     if (
       drag.mode === "none" &&
       dragDistance > DRAW_LINE_THRESHOLD_PX &&
@@ -1721,6 +1951,15 @@ const App = () => {
 
   const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+    if (
+      drag &&
+      drag.pointerId === event.pointerId &&
+      (drag.mode === "canvas-draw" || drag.mode === "canvas-erase")
+    ) {
+      dragRef.current = null;
+      return;
+    }
+
     if (drag && drag.pointerId === event.pointerId && drag.mode === "pan") {
       startPanInertia(drag.velocityX, drag.velocityY);
       dragRef.current = null;
@@ -1840,7 +2079,7 @@ const App = () => {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [curves, lines, measures, points, selectedObject, shapes]);
+  }, [canvasStrokes, curves, lines, measures, points, selectedObject, shapes]);
 
   useEffect(() => {
     if (!isResizingSidebar) return;
@@ -1886,6 +2125,7 @@ const App = () => {
         shapes,
         measures,
         dataPlots,
+        canvasStrokes,
         hoverSnapPoint,
         calculatorGuide,
         draftPoints,
@@ -1903,7 +2143,7 @@ const App = () => {
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+  }, [calculatorGuide, canvasStrokes, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1915,6 +2155,7 @@ const App = () => {
         shapes,
         measures,
         dataPlots,
+        canvasStrokes,
         hoverSnapPoint,
         calculatorGuide,
         draftPoints,
@@ -1927,7 +2168,7 @@ const App = () => {
         leastSquares: leastSquaresSummary,
       });
     }
-  }, [calculatorGuide, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+  }, [calculatorGuide, canvasStrokes, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(
     () => () => {
@@ -1956,6 +2197,19 @@ const App = () => {
     showLabel: boolean
   ) => showLabel;
   const activeColor = getSelectedObjectColor() ?? selectedColor;
+  const activeRgb = hexToRgb(activeColor);
+  const activeHsv = rgbToHsv(activeRgb.r, activeRgb.g, activeRgb.b);
+  const colorPickerStyle = {
+    "--picker-hue": `${activeHsv.h}deg`,
+    "--picker-color": activeColor,
+  } as CSSProperties;
+  const applyRgbColor = (channel: "r" | "g" | "b", value: number) => {
+    const nextRgb = {
+      ...activeRgb,
+      [channel]: clamp(Math.round(Number.isFinite(value) ? value : 0), 0, 255),
+    };
+    applyDrawingColor(rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b));
+  };
   const formatObjectForCalculator = (target: ObjectTarget) => {
     if (target.kind === "line") {
       const line = lines.find((item) => item.id === target.id);
@@ -2171,26 +2425,49 @@ const App = () => {
             </div>
             <div className="color-tools">
               <span>{selectedObject ? "Selected color" : "Color"}</span>
-              <div className="swatches">
-                {COLOR_SWATCHES.map((color) => (
-                  <button
-                    aria-label={`Select color ${color}`}
-                    className={activeColor === color ? "swatch active" : "swatch"}
-                    key={color}
-                    onClick={() => applyDrawingColor(color)}
-                    style={{ backgroundColor: color }}
-                    type="button"
-                  />
-                ))}
-                <label className="custom-color">
-                  <span>Custom</span>
+              <div className="panel-color-picker" style={colorPickerStyle}>
+                <label className="color-field">
                   <input
                     aria-label="Custom drawing color"
                     onChange={(event) => applyDrawingColor(event.target.value)}
                     type="color"
                     value={activeColor}
                   />
+                  <span className="color-field-cursor" aria-hidden="true" />
                 </label>
+                <div className="color-controls-row">
+                  <span className="color-preview" style={{ backgroundColor: activeColor }} />
+                  <input
+                    aria-label="Hue"
+                    className="hue-slider"
+                    max="359"
+                    min="0"
+                    onChange={(event) => {
+                      const next = hsvToRgb(Number(event.target.value), activeHsv.s, activeHsv.v);
+                      applyDrawingColor(rgbToHex(next.r, next.g, next.b));
+                    }}
+                    type="range"
+                    value={activeHsv.h}
+                  />
+                </div>
+                <div className="rgb-fields">
+                  {([
+                    ["r", "R", activeRgb.r],
+                    ["g", "G", activeRgb.g],
+                    ["b", "B", activeRgb.b],
+                  ] as Array<["r" | "g" | "b", string, number]>).map(([channel, label, value]) => (
+                    <label key={channel}>
+                      <input
+                        max="255"
+                        min="0"
+                        onChange={(event) => applyRgbColor(channel, Number(event.target.value))}
+                        type="number"
+                        value={value}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
               <small>
                 {selectedObject
@@ -2803,7 +3080,7 @@ const App = () => {
                       return (
                         <>
                     <span>L{index + 1}</span>
-                    <code>{formatLineEquation(line)}</code>
+                    <code>{getLineLabel(line)}</code>
                     <button
                       aria-label={
                         line.showLabel
@@ -2865,7 +3142,7 @@ const App = () => {
                       return (
                         <>
                     <span>C{index + 1}</span>
-                    <code>{formatCurveEquation(curve)}</code>
+                    <code>{getCurveLabel(curve)}</code>
                     <button
                       aria-label={
                         curve.showLabel
@@ -2927,7 +3204,7 @@ const App = () => {
                       return (
                         <>
                     <span>S{index + 1}</span>
-                    <code>{formatShapeLabel(shape)}</code>
+                    <code>{getShapeDisplayLabel(shape)}</code>
                     <button
                       aria-label={
                         shape.showLabel
@@ -2990,7 +3267,7 @@ const App = () => {
                       return (
                         <>
                     <span>D{index + 1}</span>
-                    <code>{formatMeasureLabel(measure)}</code>
+                    <code>{getMeasureDisplayLabel(measure)}</code>
                     <button
                       aria-label={
                         measure.showLabel
@@ -3069,31 +3346,92 @@ const App = () => {
               <p className="empty-state">Click the graph to add points.</p>
             ) : (
               points.map((point, index) => (
-                <div className="point-row" key={point.id}>
-                  <span>P{index + 1}</span>
-                  <input
-                    aria-label={`Change point ${index + 1} color`}
-                    className="row-color-input"
-                    onChange={(event) => updatePointColor(point.id, event.target.value)}
-                    onClick={(event) => event.stopPropagation()}
-                    type="color"
-                    value={point.color ?? "#d94f30"}
-                  />
-                  <code>
-                    ({point.x}, {point.y})
-                  </code>
-                  <button
-                    aria-label={`Delete point ${index + 1}`}
-                    onClick={() => {
-                      pushHistory();
-                      setPoints((current) =>
-                        current.filter((item) => item.id !== point.id)
-                      );
-                    }}
-                    type="button"
-                  >
-                    x
-                  </button>
+                <div className="point-row editable" key={point.id}>
+                  <div className="point-row-head">
+                    <span>{getPointLabel(point, index)}</span>
+                    <input
+                      aria-label={`Change point ${index + 1} color`}
+                      className="row-color-input"
+                      onChange={(event) =>
+                        updatePointDetails(point.id, { color: event.target.value })
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      type="color"
+                      value={point.color ?? "#d94f30"}
+                    />
+                    <button
+                      aria-label={
+                        point.showLabel === false
+                          ? `Show point ${index + 1} label`
+                          : `Hide point ${index + 1} label`
+                      }
+                      className={
+                        point.showLabel === false
+                          ? "equation-label-toggle"
+                          : "equation-label-toggle active"
+                      }
+                      onClick={() =>
+                        updatePointDetails(point.id, {
+                          showLabel: point.showLabel === false,
+                        })
+                      }
+                      title={point.showLabel === false ? "Show label" : "Hide label"}
+                      type="button"
+                    >
+                      {point.showLabel === false ? "+" : "-"}
+                    </button>
+                    <button
+                      aria-label={`Delete point ${index + 1}`}
+                      onClick={() => {
+                        pushHistory();
+                        setPoints((current) =>
+                          current.filter((item) => item.id !== point.id)
+                        );
+                      }}
+                      type="button"
+                    >
+                      x
+                    </button>
+                  </div>
+                  <label>
+                    <span>Label</span>
+                    <input
+                      onChange={(event) =>
+                        updatePointDetails(point.id, { label: event.target.value })
+                      }
+                      placeholder={`P${index + 1}`}
+                      type="text"
+                      value={point.label ?? ""}
+                    />
+                  </label>
+                  <div className="point-coordinate-grid">
+                    <label>
+                      <span>x</span>
+                      <input
+                        onChange={(event) =>
+                          updatePointDetails(point.id, {
+                            x: Number(event.target.value),
+                          })
+                        }
+                        step="any"
+                        type="number"
+                        value={formatNumber(point.x)}
+                      />
+                    </label>
+                    <label>
+                      <span>y</span>
+                      <input
+                        onChange={(event) =>
+                          updatePointDetails(point.id, {
+                            y: Number(event.target.value),
+                          })
+                        }
+                        step="any"
+                        type="number"
+                        value={formatNumber(point.y)}
+                      />
+                    </label>
+                  </div>
                 </div>
               ))
             )}
@@ -3211,7 +3549,13 @@ const App = () => {
             <>
               <canvas
                 aria-label="Interactive graph canvas"
-                className={tool === "pan" ? "graph-canvas pan-mode" : "graph-canvas"}
+                className={[
+                  "graph-canvas",
+                  tool === "pan" ? "pan-mode" : "",
+                  canvasTool !== "none" ? `canvas-${canvasTool}-mode` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 onPointerDown={handlePointerDown}
                 onPointerLeave={() => {
                   setCursor(null);
@@ -3222,6 +3566,16 @@ const App = () => {
                 onContextMenu={(event) => event.preventDefault()}
                 onWheel={handleWheel}
                 ref={canvasRef}
+              />
+              <CanvasToolPalette
+                canvasSize={canvasSize}
+                collapsed={isCanvasToolbarCollapsed}
+                onCollapsedChange={setIsCanvasToolbarCollapsed}
+                onPositionChange={setCanvasToolbarPosition}
+                onToolChange={setCanvasTool}
+                position={canvasToolbarPosition}
+                selectedColor={selectedColor}
+                tool={canvasTool}
               />
               {lines.map((line) => {
                 const target: ObjectTarget = { kind: "line", id: line.id };
@@ -3234,13 +3588,18 @@ const App = () => {
                     active={active}
                     color={line.color}
                     key={`line-label-${line.id}`}
-                    label={line.showLabel ? formatLineEquation(line) : "Show label"}
+                    label={line.showLabel ? getLineLabel(line) : "Show label"}
                     onHide={() => updateLabelVisibility(target, false)}
                     onPointerDown={() => setSelectedObject(target)}
                     onShow={() => updateLabelVisibility(target, true)}
                     showLabel={line.showLabel}
                     style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
                   >
+                    <LabelEditor
+                      fallback={formatLineEquation(line)}
+                      label={line.label}
+                      onChange={(label) => updateObjectLabel(target, label)}
+                    />
                     <LineEditor
                       line={line}
                       onChange={(next) => updateLineFromEquation(line.id, next)}
@@ -3257,13 +3616,18 @@ const App = () => {
                     active={active}
                     color={curve.color}
                     key={`curve-label-${curve.id}`}
-                    label={curve.showLabel ? formatCurveEquation(curve) : "Show label"}
+                    label={curve.showLabel ? getCurveLabel(curve) : "Show label"}
                     onHide={() => updateLabelVisibility(target, false)}
                     onPointerDown={() => setSelectedObject(target)}
                     onShow={() => updateLabelVisibility(target, true)}
                     showLabel={curve.showLabel}
                     style={getLabelStyle(getCanvasPoint(curve.b))}
                   >
+                    <LabelEditor
+                      fallback={formatCurveEquation(curve)}
+                      label={curve.label}
+                      onChange={(label) => updateObjectLabel(target, label)}
+                    />
                     <CurveEditor
                       curve={curve}
                       onChange={(next) => updateCurveFromEquation(curve.id, next)}
@@ -3281,7 +3645,7 @@ const App = () => {
                     active={active}
                     color={shape.color}
                     key={`shape-label-${shape.id}`}
-                    label={shape.showLabel ? formatShapeLabel(shape) : "Show label"}
+                    label={shape.showLabel ? getShapeDisplayLabel(shape) : "Show label"}
                     onHide={() => updateLabelVisibility(target, false)}
                     onPointerDown={() => setSelectedObject(target)}
                     onShow={() => updateLabelVisibility(target, true)}
@@ -3294,6 +3658,11 @@ const App = () => {
                       })
                     )}
                   >
+                    <LabelEditor
+                      fallback={formatShapeLabel(shape)}
+                      label={shape.label}
+                      onChange={(label) => updateObjectLabel(target, label)}
+                    />
                     <ShapeEditor
                       shape={shape}
                       onChange={(next) => updateShapeSize(shape.id, next)}
@@ -3312,13 +3681,18 @@ const App = () => {
                     active={active}
                     color={measure.color}
                     key={`measure-label-${measure.id}`}
-                    label={measure.showLabel ? formatMeasureLabel(measure) : "Show label"}
+                    label={measure.showLabel ? getMeasureDisplayLabel(measure) : "Show label"}
                     onHide={() => updateLabelVisibility(target, false)}
                     onPointerDown={() => setSelectedObject(target)}
                     onShow={() => updateLabelVisibility(target, true)}
                     showLabel={measure.showLabel}
                     style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
                   >
+                    <LabelEditor
+                      fallback={formatMeasureLabel(measure)}
+                      label={measure.label}
+                      onChange={(label) => updateObjectLabel(target, label)}
+                    />
                     <MeasureDetails measure={measure} />
                   </InlineGraphLabel>
                 );
@@ -3345,6 +3719,83 @@ const getGridStroke = (index: number) => {
   if (index % 4 === 0) return "#9a9a9a";
   if (index % 2 === 0) return "#b8b8b8";
   return "#dedede";
+};
+
+const getPointLabel = (point: GraphPoint, index: number) =>
+  point.label?.trim() || `P${index + 1}`;
+
+const getLineLabel = (line: GraphLine) =>
+  line.label?.trim() || formatLineEquation(line);
+
+const getCurveLabel = (curve: GraphCurve) =>
+  curve.label?.trim() || formatCurveEquation(curve);
+
+const getShapeDisplayLabel = (shape: GraphShape) =>
+  shape.label?.trim() || formatShapeLabel(shape);
+
+const getMeasureDisplayLabel = (measure: GraphMeasure) =>
+  measure.label?.trim() || formatMeasureLabel(measure);
+
+const hexToRgb = (hex: string) => {
+  const fallback = { r: 40, g: 102, b: 110 };
+  const normalized = hex.replace("#", "").trim();
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return fallback;
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  };
+};
+
+const rgbToHex = (r: number, g: number, b: number) =>
+  `#${[r, g, b]
+    .map((channel) =>
+      clamp(Math.round(channel), 0, 255).toString(16).padStart(2, "0")
+    )
+    .join("")}`;
+
+const rgbToHsv = (r: number, g: number, b: number) => {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let h = 0;
+
+  if (delta !== 0) {
+    if (max === red) h = 60 * (((green - blue) / delta) % 6);
+    else if (max === green) h = 60 * ((blue - red) / delta + 2);
+    else h = 60 * ((red - green) / delta + 4);
+  }
+
+  return {
+    h: Math.round((h + 360) % 360),
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+};
+
+const hsvToRgb = (h: number, s: number, v: number) => {
+  const chroma = v * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - chroma;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+
+  if (h < 60) [red, green, blue] = [chroma, x, 0];
+  else if (h < 120) [red, green, blue] = [x, chroma, 0];
+  else if (h < 180) [red, green, blue] = [0, chroma, x];
+  else if (h < 240) [red, green, blue] = [0, x, chroma];
+  else if (h < 300) [red, green, blue] = [x, 0, chroma];
+  else [red, green, blue] = [chroma, 0, x];
+
+  return {
+    r: Math.round((red + m) * 255),
+    g: Math.round((green + m) * 255),
+    b: Math.round((blue + m) * 255),
+  };
 };
 
 const InlineGraphLabel = ({
@@ -3400,6 +3851,142 @@ const InlineGraphLabel = ({
     {active && showLabel ? <div className="inline-label-editor">{children}</div> : null}
   </div>
 );
+
+const LabelEditor = ({
+  fallback,
+  label,
+  onChange,
+}: {
+  fallback: string;
+  label?: string;
+  onChange: (label: string) => void;
+}) => (
+  <label className="mini-field full">
+    <span>label</span>
+    <input
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={fallback}
+      type="text"
+      value={label ?? ""}
+    />
+  </label>
+);
+
+const CanvasToolPalette = ({
+  canvasSize,
+  collapsed,
+  onCollapsedChange,
+  onPositionChange,
+  onToolChange,
+  position,
+  selectedColor,
+  tool,
+}: {
+  canvasSize: { width: number; height: number };
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
+  onPositionChange: (position: CanvasToolbarPosition) => void;
+  onToolChange: (tool: CanvasTool) => void;
+  position: CanvasToolbarPosition;
+  selectedColor: string;
+  tool: CanvasTool;
+}) => {
+  const toolbarDragRef = useRef<CanvasToolbarDrag | null>(null);
+
+  const moveToolbar = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = toolbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.hypot(dx, dy) > 3) drag.moved = true;
+    const toolbarWidth = collapsed ? 52 : 214;
+    const toolbarHeight = collapsed ? 52 : 128;
+    onPositionChange({
+      x: clamp(drag.startLeft + dx, 8, Math.max(8, canvasSize.width - toolbarWidth - 8)),
+      y: clamp(drag.startTop + dy, 8, Math.max(8, canvasSize.height - toolbarHeight - 8)),
+    });
+  };
+
+  const finishToolbarDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = toolbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    toolbarDragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (collapsed && !drag.moved) {
+      onCollapsedChange(false);
+    }
+  };
+
+  return (
+    <div
+      className={collapsed ? "canvas-tool-palette collapsed" : "canvas-tool-palette"}
+      onPointerDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (!target.closest("[data-canvas-toolbar-drag]")) return;
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        toolbarDragRef.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          startLeft: position.x,
+          startTop: position.y,
+          moved: false,
+        };
+      }}
+      onPointerMove={moveToolbar}
+      onPointerUp={finishToolbarDrag}
+      style={{
+        left: position.x,
+        top: position.y,
+        "--canvas-tool-color": selectedColor,
+      } as CSSProperties}
+    >
+      {collapsed ? (
+        <button
+          aria-label="Open canvas tools"
+          className="canvas-tool-orb"
+          data-canvas-toolbar-drag
+          type="button"
+        >
+          P
+        </button>
+      ) : (
+        <>
+          <div className="canvas-tool-title" data-canvas-toolbar-drag>
+            <span>Canvas</span>
+            <button
+              aria-label="Collapse canvas tools"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onCollapsedChange(true)}
+              type="button"
+            >
+              -
+            </button>
+          </div>
+          <div className="canvas-tool-buttons">
+            {([
+              ["pencil", "Pencil"],
+              ["marker", "Thin marker"],
+              ["eraser", "Eraser"],
+              ["none", "Off"],
+            ] as Array<[CanvasTool, string]>).map(([value, label]) => (
+              <button
+                className={tool === value ? "active" : ""}
+                key={value}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onToolChange(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 const LineEditor = ({
   line,
@@ -3562,6 +4149,7 @@ const drawGraph = (
     shapes: GraphShape[];
     measures: GraphMeasure[];
     dataPlots: DataPlot[];
+    canvasStrokes: CanvasStroke[];
     hoverSnapPoint: HoverSnapPoint | null;
     calculatorGuide: CalculatorGuide | null;
     draftPoints: GraphPoint[];
@@ -3812,14 +4400,16 @@ const drawGraph = (
     context.stroke();
     context.restore();
 
+    const measureAngle = Math.atan2(end.y - start.y, end.x - start.x);
     [measure.a, measure.b].forEach((point, handleIndex) => {
-      drawHandle(context, toScreen(point), measure.color);
+      const screenPoint = toScreen(point);
+      drawDimensionCap(context, screenPoint, measureAngle, measure.color);
       if (measure.showEndpointLabels ?? true) {
         context.fillStyle = "#24211e";
         context.fillText(
           `D${index + 1}.${handleIndex + 1}`,
-          toScreen(point).x + 9,
-          toScreen(point).y - 18
+          screenPoint.x + 9,
+          screenPoint.y - 18
         );
       }
     });
@@ -3888,9 +4478,13 @@ const drawGraph = (
     context.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
     context.fill();
     context.stroke();
-    context.fillStyle = "#24211e";
-    context.fillText(`P${index + 1}`, screen.x + 9, screen.y - 18);
+    if (point.showLabel !== false) {
+      context.fillStyle = "#24211e";
+      context.fillText(getPointLabel(point, index), screen.x + 9, screen.y - 18);
+    }
   });
+
+  drawCanvasStrokes(context, graph.canvasStrokes, toScreen);
 
   context.fillStyle = "#24211e";
   context.font = "600 13px Inter, system-ui, sans-serif";
@@ -4240,11 +4834,61 @@ const drawDataPoint = (
   context.stroke();
 };
 
+const drawCanvasStrokes = (
+  context: CanvasRenderingContext2D,
+  strokes: CanvasStroke[],
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  strokes.forEach((stroke) => {
+    if (stroke.points.length === 0) return;
+    context.save();
+    context.globalAlpha = stroke.opacity;
+    context.strokeStyle = stroke.color;
+    context.lineWidth = stroke.width;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.beginPath();
+    stroke.points.forEach((point, index) => {
+      const screen = toScreen(point);
+      if (index === 0) context.moveTo(screen.x, screen.y);
+      else context.lineTo(screen.x, screen.y);
+    });
+    if (stroke.points.length === 1) {
+      const screen = toScreen(stroke.points[0]);
+      context.lineTo(screen.x + 0.01, screen.y + 0.01);
+    }
+    context.stroke();
+    context.restore();
+  });
+};
+
 const isSelectedObject = (
   selected: ObjectTarget | null,
   kind: ObjectTarget["kind"],
   id: number
 ) => selected?.kind === kind && selected.id === id;
+
+const drawDimensionCap = (
+  context: CanvasRenderingContext2D,
+  point: { x: number; y: number },
+  angle: number,
+  color: string
+) => {
+  const halfLength = 8;
+  const capAngle = angle + Math.PI / 2;
+  const dx = Math.cos(capAngle) * halfLength;
+  const dy = Math.sin(capAngle) * halfLength;
+
+  context.save();
+  context.beginPath();
+  context.strokeStyle = color;
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.moveTo(point.x - dx, point.y - dy);
+  context.lineTo(point.x + dx, point.y + dy);
+  context.stroke();
+  context.restore();
+};
 
 const drawHandle = (
   context: CanvasRenderingContext2D,

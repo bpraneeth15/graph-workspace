@@ -136,6 +136,7 @@ button:disabled {
   overflow: auto;
   border-right: 1px solid #d8dee4;
   background: #fbfcfd;
+  font-size: 13px;
   padding: 18px;
   box-shadow: 4px 0 18px rgba(15, 23, 42, 0.05);
 }
@@ -218,14 +219,14 @@ button:disabled {
 }
 
 .brand h1 {
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1.1;
 }
 
 .brand p {
   margin-top: 4px;
   color: #65717b;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .control-section {
@@ -234,7 +235,7 @@ button:disabled {
 }
 
 .control-section h2 {
-  font-size: 13px;
+  font-size: 12px;
   letter-spacing: 0;
   text-transform: uppercase;
   color: #65717b;
@@ -325,7 +326,7 @@ button:disabled {
 
 .color-tools > span {
   color: #4a433d;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .color-tools small {
@@ -333,25 +334,130 @@ button:disabled {
   font-size: 12px;
 }
 
-.swatches {
-  display: flex;
+.panel-color-picker {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #cfd5da;
+  border-radius: 8px;
+  background: #f8fafb;
+  padding: 10px;
+}
+
+.color-field {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  height: 118px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  background:
+    linear-gradient(to top, #000000, rgba(0, 0, 0, 0)),
+    linear-gradient(to right, #ffffff, hsla(var(--picker-hue), 100%, 50%, 1));
+  cursor: pointer;
+}
+
+.color-field input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.color-field-cursor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.color-controls-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
   align-items: center;
-  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.color-preview {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #cfd5da;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.hue-slider {
+  appearance: none;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #ff0000,
+    #ff00ff,
+    #0000ff,
+    #00ffff,
+    #00ff00,
+    #ffff00,
+    #ff0000
+  );
+  cursor: pointer;
+}
+
+.hue-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--picker-color);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.28);
+}
+
+.hue-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--picker-color);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.28);
+}
+
+.rgb-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.swatch {
-  min-height: 28px;
-  width: 28px;
-  background-image: none;
-  border: 2px solid #fffdf9;
-  border-radius: 7px;
-  box-shadow: 0 0 0 1px #cfd5da, 0 2px 6px rgba(15, 23, 42, 0.12);
-  padding: 0;
+.rgb-fields label {
+  display: grid;
+  gap: 4px;
+  text-align: center;
 }
 
-.swatch.active {
-  box-shadow: 0 0 0 2px #151719, 0 4px 10px rgba(15, 23, 42, 0.18);
+.rgb-fields input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid #aeb9c3;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #151719;
+  font-weight: 700;
+  text-align: center;
+}
+
+.rgb-fields span {
+  color: #4a433d;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .custom-color {
@@ -395,7 +501,7 @@ button:disabled {
 .field span,
 .toggle span {
   color: #4a433d;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .field input {
@@ -799,6 +905,49 @@ button:disabled {
   grid-template-columns: 40px 30px minmax(0, 1fr) 34px;
 }
 
+.point-row.editable {
+  grid-template-columns: 1fr;
+}
+
+.point-row-head,
+.point-coordinate-grid {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+}
+
+.point-row-head {
+  grid-template-columns: minmax(0, 1fr) 30px 34px 34px;
+}
+
+.point-coordinate-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.point-row label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.point-row label span {
+  color: #756d63;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.point-row input[type="text"],
+.point-row input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid #cfd5da;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #151719;
+  padding: 0 7px;
+}
+
 .equation-row {
   grid-template-columns: 40px minmax(0, 1fr) 34px 34px;
   cursor: pointer;
@@ -834,6 +983,7 @@ button:disabled {
 .equation-row code {
   overflow: hidden;
   color: #4a433d;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -985,6 +1135,99 @@ button:disabled {
 
 .graph-canvas.pan-mode:active {
   cursor: default;
+}
+
+.graph-canvas.canvas-pencil-mode,
+.graph-canvas.canvas-marker-mode {
+  cursor: crosshair;
+}
+
+.graph-canvas.canvas-eraser-mode {
+  cursor: cell;
+}
+
+.canvas-tool-palette {
+  position: absolute;
+  z-index: 12;
+  display: grid;
+  gap: 8px;
+  width: 206px;
+  border: 1px solid #cfd5da;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.2);
+  padding: 8px;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.canvas-tool-palette.collapsed {
+  display: block;
+  width: auto;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.canvas-tool-orb {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  border: 1px solid #174c53;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--canvas-tool-color), #17383e);
+  color: #ffffff;
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.24);
+  padding: 0;
+  cursor: grab;
+}
+
+.canvas-tool-orb:active,
+.canvas-tool-title:active {
+  cursor: grabbing;
+}
+
+.canvas-tool-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #4a433d;
+  cursor: grab;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.canvas-tool-title button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-height: 24px;
+  border-radius: 6px;
+  padding: 0;
+}
+
+.canvas-tool-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.canvas-tool-buttons button {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.canvas-tool-buttons button.active {
+  border-color: #28666e;
+  background: #e6f1f3;
+  color: #174c53;
 }
 
 .surface-viewer {
@@ -1313,6 +1556,10 @@ button:disabled {
   gap: 4px;
 }
 
+.mini-field.full {
+  grid-column: 1 / -1;
+}
+
 .mini-field span,
 .mini-note {
   color: #4a433d;
@@ -1540,19 +1787,29 @@ textarea {
   color: var(--ui-text);
 }
 
-.swatch {
-  border-color: #202124;
-  box-shadow: 0 0 0 1px #666b75, 0 2px 7px rgba(0, 0, 0, 0.35);
+.panel-color-picker {
+  border-color: var(--ui-border);
+  background: #25282d;
 }
 
-.swatch.active {
-  box-shadow: 0 0 0 2px var(--ui-accent), 0 0 0 4px rgba(77, 170, 252, 0.22);
+.color-field {
+  border-color: var(--ui-border-soft);
 }
 
+.color-preview,
+.rgb-fields input,
 .custom-color input,
 .row-color-input {
   border-color: var(--ui-border);
   background: var(--ui-input);
+}
+
+.rgb-fields input {
+  color: var(--ui-text);
+}
+
+.rgb-fields span {
+  color: var(--ui-muted);
 }
 
 .field input[type="text"],
@@ -1672,6 +1929,17 @@ textarea {
   color: #ff9b73;
 }
 
+.point-row label span {
+  color: var(--ui-muted);
+}
+
+.point-row input[type="text"],
+.point-row input[type="number"] {
+  border-color: var(--ui-border-soft);
+  background: #25282d;
+  color: var(--ui-text);
+}
+
 .equation-row span,
 .equation-label-toggle,
 .calculator-context code,
@@ -1685,6 +1953,34 @@ textarea {
 
 .workspace {
   background: #151619;
+}
+
+.canvas-tool-palette {
+  border-color: var(--ui-border);
+  background: rgba(37, 40, 45, 0.96);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.canvas-tool-palette.collapsed {
+  background: transparent;
+  box-shadow: none;
+}
+
+.canvas-tool-title {
+  color: var(--ui-text);
+}
+
+.canvas-tool-title button,
+.canvas-tool-buttons button {
+  border-color: var(--ui-border-soft);
+  background: #303238;
+  color: var(--ui-text);
+}
+
+.canvas-tool-buttons button.active {
+  border-color: var(--ui-accent);
+  background: #26384e;
+  color: #d7ecff;
 }
 
 .topbar {
