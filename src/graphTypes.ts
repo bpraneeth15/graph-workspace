@@ -3,6 +3,8 @@ export type GraphPoint = {
   x: number;
   y: number;
   color?: string;
+  label?: string;
+  showLabel?: boolean;
 };
 
 export type ViewState = {
@@ -68,6 +70,7 @@ export type GraphLine = {
   b: GraphPoint;
   color: string;
   showLabel: boolean;
+  label?: string;
 };
 
 export type GraphCurve = {
@@ -77,6 +80,7 @@ export type GraphCurve = {
   c: GraphPoint;
   color: string;
   showLabel: boolean;
+  label?: string;
 };
 
 export type GraphShape = {
@@ -86,6 +90,7 @@ export type GraphShape = {
   b: GraphPoint;
   color: string;
   showLabel: boolean;
+  label?: string;
 };
 
 export type GraphMeasure = {
@@ -95,6 +100,7 @@ export type GraphMeasure = {
   color: string;
   showLabel: boolean;
   showEndpointLabels?: boolean;
+  label?: string;
 };
 
 export type DataPlotStyle = "scatter" | "line" | "scatter-line" | "bar";
