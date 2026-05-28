@@ -86,6 +86,8 @@ const Surface3DViewer = lazy(() =>
   }))
 );
 
+const CAPTURE_STORAGE_KEY = "graph-workspace:captures";
+
 type GraphSnapshot = {
   points: GraphPoint[];
   lines: GraphLine[];
@@ -95,6 +97,39 @@ type GraphSnapshot = {
   dataPlots: DataPlot[];
   canvasStrokes: CanvasStroke[];
 };
+
+type WorkspaceCapture = {
+  id: string;
+  name: string;
+  savedAt: string;
+  workspaceMode: WorkspaceMode;
+  view: ViewState;
+  points: GraphPoint[];
+  lines: GraphLine[];
+  curves: GraphCurve[];
+  shapes: GraphShape[];
+  measures: GraphMeasure[];
+  dataPlots: DataPlot[];
+  canvasStrokes: CanvasStroke[];
+  selectedColor: string;
+  surface: {
+    selectedShapeId: number;
+    shapes: SurfaceShape[];
+    strokes: SurfaceStroke[];
+    dataPoints: SurfaceDataPoint[];
+    range: number;
+    resolution: number;
+    showSlices: boolean;
+    showContour: boolean;
+    panelView: SurfacePanelView;
+    cutX: number;
+    cutY: number;
+    cutZ: number;
+    rendererMode: RendererMode;
+  };
+};
+
+type SurfacePanelView = "contour" | "flat";
 
 type HandleTarget =
   | { kind: "point"; id: number }
@@ -217,6 +252,24 @@ const cloneSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
   })),
 });
 
+const readWorkspaceCaptures = (): WorkspaceCapture[] => {
+  try {
+    const raw = localStorage.getItem(CAPTURE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeWorkspaceCaptures = (captures: WorkspaceCapture[]) => {
+  localStorage.setItem(CAPTURE_STORAGE_KEY, JSON.stringify(captures));
+};
+
+const getNextId = (items: Array<{ id: number }>) =>
+  Math.max(1, ...items.map((item) => item.id + 1));
+
 const App = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -254,10 +307,14 @@ const App = () => {
   const [snapStep, setSnapStep] = useState(SUBGRID_STEP);
   const [connectPoints, setConnectPoints] = useState(false);
   const [showLeastSquares, setShowLeastSquares] = useState(false);
+  const [referenceLineMode, setReferenceLineMode] = useState(false);
   const [canvasTool, setCanvasTool] = useState<CanvasTool>("none");
   const [isCanvasToolbarCollapsed, setIsCanvasToolbarCollapsed] = useState(true);
   const [canvasToolbarPosition, setCanvasToolbarPosition] =
     useState<CanvasToolbarPosition>({ x: 74, y: 74 });
+  const [captures, setCaptures] = useState<WorkspaceCapture[]>(readWorkspaceCaptures);
+  const [selectedCaptureId, setSelectedCaptureId] = useState("");
+  const [captureName, setCaptureName] = useState("Graph capture");
   const [cursor, setCursor] = useState<GraphPoint | null>(null);
   const [manualX, setManualX] = useState("");
   const [manualY, setManualY] = useState("");
@@ -270,6 +327,7 @@ const App = () => {
   const [surfaceShapes, setSurfaceShapes] = useState<SurfaceShape[]>([
     {
       id: 1,
+      type: "surface",
       name: "Surface 1",
       equation: "sin(sqrt(x*x + y*y))",
       color: COLOR_SWATCHES[0],
@@ -285,6 +343,7 @@ const App = () => {
   const [surfaceResolution, setSurfaceResolution] = useState(48);
   const [surfaceShowSlices, setSurfaceShowSlices] = useState(true);
   const [surfaceShowContour, setSurfaceShowContour] = useState(true);
+  const [surfacePanelView, setSurfacePanelView] = useState<SurfacePanelView>("contour");
   const [surfaceCutX, setSurfaceCutX] = useState(0);
   const [surfaceCutY, setSurfaceCutY] = useState(0);
   const [surfaceCutZ, setSurfaceCutZ] = useState(0);
@@ -314,6 +373,7 @@ const App = () => {
   const surfaceEquation =
     selectedSurfaceShape?.equation ?? "sin(sqrt(x*x + y*y))";
   const surfaceColor = selectedSurfaceShape?.color ?? COLOR_SWATCHES[0];
+  const selectedSurfaceType = selectedSurfaceShape?.type ?? "surface";
 
   const selectTool = (nextTool: Tool) => {
     setTool(nextTool);
@@ -333,6 +393,38 @@ const App = () => {
     updateSelectedSurfaceShape({ equation: preset.equation });
     setSurfaceRange(preset.range);
     setSurfaceResolution(preset.resolution);
+  };
+
+  const addSurfaceShape = () => {
+    const id = nextSurfaceShapeId.current++;
+    const shape: SurfaceShape = {
+      id,
+      type: "surface",
+      name: `Surface ${id}`,
+      equation: "sin(x) * cos(y)",
+      color: selectedColor,
+      position: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    };
+    setSurfaceShapes((current) => [...current, shape]);
+    setSelectedSurfaceShapeId(id);
+    setSurfaceTool("select");
+  };
+
+  const addSurfaceCube = () => {
+    const id = nextSurfaceShapeId.current++;
+    const cube: SurfaceShape = {
+      id,
+      type: "cube",
+      name: `Cube ${id}`,
+      equation: "",
+      color: selectedColor,
+      position: { x: 0, y: 0.5, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    };
+    setSurfaceShapes((current) => [...current, cube]);
+    setSelectedSurfaceShapeId(id);
+    setSurfaceTool("select");
   };
 
   const updateSelectedSurfaceShape = (patch: Partial<SurfaceShape>) => {
@@ -402,6 +494,7 @@ const App = () => {
           resolution: surfaceResolution,
           slices: {
             show: surfaceShowSlices,
+            contourPanelView: surfacePanelView,
             x: surfaceCutX,
             y: surfaceCutY,
             z: surfaceCutZ,
@@ -409,6 +502,148 @@ const App = () => {
         },
       })
     );
+  };
+
+  const createWorkspaceCapture = (name = captureName) => {
+    const id = `${Date.now()}`;
+    const savedAt = new Date().toISOString();
+    const nextCapture: WorkspaceCapture = {
+      id,
+      name: name.trim() || `Capture ${captures.length + 1}`,
+      savedAt,
+      workspaceMode,
+      view,
+      points,
+      lines,
+      curves,
+      shapes,
+      measures,
+      dataPlots,
+      canvasStrokes,
+      selectedColor,
+      surface: {
+        selectedShapeId: selectedSurfaceShapeId,
+        shapes: surfaceShapes,
+        strokes: surfaceStrokes,
+        dataPoints: surfaceDataPoints,
+        range: surfaceRange,
+        resolution: surfaceResolution,
+        showSlices: surfaceShowSlices,
+        showContour: surfaceShowContour,
+        panelView: surfacePanelView,
+        cutX: surfaceCutX,
+        cutY: surfaceCutY,
+        cutZ: surfaceCutZ,
+        rendererMode,
+      },
+    };
+
+    setCaptures((current) => {
+      const next = [nextCapture, ...current].slice(0, 20);
+      writeWorkspaceCaptures(next);
+      return next;
+    });
+    setSelectedCaptureId(id);
+  };
+
+  const restoreWorkspaceCapture = (captureId = selectedCaptureId) => {
+    const capture = captures.find((item) => item.id === captureId);
+    if (!capture) return;
+
+    pushHistory();
+    setWorkspaceMode(capture.workspaceMode);
+    setView(capture.view);
+    setPoints(capture.points.map(clonePoint));
+    setLines(
+      capture.lines.map((line) => ({
+        ...line,
+        a: clonePoint(line.a),
+        b: clonePoint(line.b),
+      }))
+    );
+    setCurves(
+      capture.curves.map((curve) => ({
+        ...curve,
+        a: clonePoint(curve.a),
+        b: clonePoint(curve.b),
+        c: clonePoint(curve.c),
+      }))
+    );
+    setShapes(
+      capture.shapes.map((shape) => ({
+        ...shape,
+        a: clonePoint(shape.a),
+        b: clonePoint(shape.b),
+      }))
+    );
+    setMeasures(
+      capture.measures.map((measure) => ({
+        ...measure,
+        a: clonePoint(measure.a),
+        b: clonePoint(measure.b),
+      }))
+    );
+    setDataPlots(
+      capture.dataPlots.map((plot) => ({
+        ...plot,
+        values: plot.values.map((value) => ({ ...value })),
+      }))
+    );
+    setCanvasStrokes(
+      capture.canvasStrokes.map((stroke) => ({
+        ...stroke,
+        points: stroke.points.map(clonePoint),
+      }))
+    );
+    setSelectedColor(capture.selectedColor);
+    setSurfaceShapes(capture.surface.shapes.map((shape) => ({ ...shape })));
+    setSelectedSurfaceShapeId(capture.surface.selectedShapeId);
+    setSurfaceStrokes(
+      capture.surface.strokes.map((stroke) => ({
+        ...stroke,
+        points: stroke.points.map((point) => ({ ...point })),
+      }))
+    );
+    setSurfaceDataPoints(
+      capture.surface.dataPoints.map((point) => ({ ...point }))
+    );
+    setSurfaceRange(capture.surface.range ?? 6);
+    setSurfaceResolution(capture.surface.resolution ?? 48);
+    setSurfaceShowSlices(capture.surface.showSlices ?? true);
+    setSurfaceShowContour(capture.surface.showContour ?? true);
+    setSurfacePanelView(capture.surface.panelView ?? "contour");
+    setSurfaceCutX(capture.surface.cutX ?? 0);
+    setSurfaceCutY(capture.surface.cutY ?? 0);
+    setSurfaceCutZ(capture.surface.cutZ ?? 0);
+    setRendererMode(capture.surface.rendererMode ?? "auto");
+    setSelectedObject(null);
+    setDraftPoints([]);
+    setHoverMenu(null);
+    setHoverSnapPoint(null);
+    syncNextIdsFromCapture(capture);
+  };
+
+  const deleteWorkspaceCapture = (captureId = selectedCaptureId) => {
+    if (!captureId) return;
+    setCaptures((current) => {
+      const next = current.filter((capture) => capture.id !== captureId);
+      writeWorkspaceCaptures(next);
+      return next;
+    });
+    setSelectedCaptureId((current) => (current === captureId ? "" : current));
+  };
+
+  const syncNextIdsFromCapture = (capture: WorkspaceCapture) => {
+    nextPointId.current = getNextId(capture.points);
+    nextLineId.current = getNextId(capture.lines);
+    nextCurveId.current = getNextId(capture.curves);
+    nextShapeId.current = getNextId(capture.shapes);
+    nextMeasureId.current = getNextId(capture.measures);
+    nextDataPlotId.current = getNextId(capture.dataPlots);
+    nextCanvasStrokeId.current = getNextId(capture.canvasStrokes);
+    nextSurfaceShapeId.current = getNextId(capture.surface.shapes);
+    nextSurfaceStrokeId.current = getNextId(capture.surface.strokes);
+    nextSurfaceDataPointId.current = getNextId(capture.surface.dataPoints);
   };
 
   const getGraphSnapshot = (): GraphSnapshot =>
@@ -623,6 +858,8 @@ const App = () => {
         b,
         color: selectedColor,
         showLabel: true,
+        reference: referenceLineMode,
+        label: referenceLineMode ? "reference line" : undefined,
       },
     ]);
     setSelectedObject({ kind: "line", id });
@@ -796,6 +1033,14 @@ const App = () => {
     };
 
     lines.forEach((line) => {
+      if (line.reference) {
+        choose(
+          distanceToSegment(local, worldToCanvas(line.a), worldToCanvas(line.b)),
+          { kind: "line", id: line.id }
+        );
+        return;
+      }
+
       const parts = getLineParts(line);
       if (parts.vertical) {
         choose(Math.abs(local.x - worldToCanvas({ id: 0, x: parts.x, y: 0 }).x), {
@@ -918,6 +1163,14 @@ const App = () => {
     };
 
     lines.forEach((line) => {
+      if (line.reference) {
+        choose(closestPointOnSegmentWorld(world, line.a, line.b), {
+          kind: "line",
+          id: line.id,
+        });
+        return;
+      }
+
       const parts = getLineParts(line);
       const point = parts.vertical
         ? { id: 0, x: parts.x, y: world.y }
@@ -1186,7 +1439,9 @@ const App = () => {
 
   const updatePointDetails = (
     pointId: number,
-    patch: Partial<Pick<GraphPoint, "x" | "y" | "color" | "label" | "showLabel">>
+    patch: Partial<
+      Pick<GraphPoint, "x" | "y" | "color" | "label" | "showLabel" | "labelDx" | "labelDy">
+    >
   ) => {
     pushHistory();
     setPoints((current) =>
@@ -1205,6 +1460,60 @@ const App = () => {
                   : roundCoordinate(patch.y),
             }
           : point
+      )
+    );
+  };
+
+  const movePointLabel = (
+    pointId: number,
+    clientX: number,
+    clientY: number,
+    grabOffset: { x: number; y: number }
+  ) => {
+    const canvas = canvasRef.current;
+    const point = points.find((item) => item.id === pointId);
+    if (!canvas || !point) return;
+    const rect = canvas.getBoundingClientRect();
+    const anchor = worldToCanvas(point);
+    const labelLeft = clientX - rect.left - grabOffset.x;
+    const labelTop = clientY - rect.top - grabOffset.y;
+    setPoints((current) =>
+      current.map((item) =>
+        item.id === pointId
+          ? {
+              ...item,
+              labelDx: roundCoordinate(labelLeft - anchor.x),
+              labelDy: roundCoordinate(labelTop - anchor.y),
+            }
+          : item
+      )
+    );
+  };
+
+  const moveMeasureLabel = (
+    measureId: number,
+    clientX: number,
+    clientY: number
+  ) => {
+    const canvas = canvasRef.current;
+    const measure = measures.find((item) => item.id === measureId);
+    if (!canvas || !measure) return;
+    const rect = canvas.getBoundingClientRect();
+    const local = { x: clientX - rect.left, y: clientY - rect.top };
+    const a = worldToCanvas(measure.a);
+    const b = worldToCanvas(measure.b);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 0.000001) return;
+    const nextT = clamp(
+      ((local.x - a.x) * dx + (local.y - a.y) * dy) / lengthSquared,
+      0.04,
+      0.96
+    );
+    setMeasures((current) =>
+      current.map((item) =>
+        item.id === measureId ? { ...item, labelT: roundCoordinate(nextT) } : item
       )
     );
   };
@@ -2190,6 +2499,22 @@ const App = () => {
     left: clamp(anchor.x + 12, 8, Math.max(8, canvasSize.width - 220)),
     top: clamp(anchor.y - 22, 8, Math.max(8, canvasSize.height - 82)),
   });
+  const getPointLabelStyle = (point: GraphPoint) => {
+    const anchor = getCanvasPoint(point);
+    return {
+      left: clamp(anchor.x + (point.labelDx ?? 9), 8, Math.max(8, canvasSize.width - 160)),
+      top: clamp(anchor.y + (point.labelDy ?? -18), 8, Math.max(8, canvasSize.height - 40)),
+    };
+  };
+  const getMeasureLabelStyle = (measure: GraphMeasure) => {
+    const a = getCanvasPoint(measure.a);
+    const b = getCanvasPoint(measure.b);
+    const t = measure.labelT ?? 0.5;
+    return getLabelStyle({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+    });
+  };
   const isOverlayActive = (target: ObjectTarget) =>
     isSelectedObject(selectedObject, target.kind, target.id);
   const shouldShowOverlay = (
@@ -2213,7 +2538,7 @@ const App = () => {
   const formatObjectForCalculator = (target: ObjectTarget) => {
     if (target.kind === "line") {
       const line = lines.find((item) => item.id === target.id);
-      return line ? formatLineEquation(line) : "Line";
+      return line ? getLineLabel(line) : "Line";
     }
     if (target.kind === "curve") {
       const curve = curves.find((item) => item.id === target.id);
@@ -2256,6 +2581,8 @@ const App = () => {
     selectedTarget: selectedObject,
     formatObject: formatObjectForCalculator,
   };
+  const selectedCapture =
+    captures.find((capture) => capture.id === selectedCaptureId) ?? null;
 
   return (
     <main
@@ -2273,6 +2600,47 @@ const App = () => {
             <button type="button" onClick={saveWorkspaceSnapshot}>
               Save workspace
             </button>
+            <label className="field compact-field">
+              <span>Capture name</span>
+              <input
+                onChange={(event) => setCaptureName(event.target.value)}
+                type="text"
+                value={captureName}
+              />
+            </label>
+            <button type="button" onClick={() => createWorkspaceCapture()}>
+              Capture current workspace
+            </button>
+            <label className="field compact-field">
+              <span>Retrieve capture</span>
+              <select
+                onChange={(event) => setSelectedCaptureId(event.target.value)}
+                value={selectedCaptureId}
+              >
+                <option value="">Choose saved capture</option>
+                {captures.map((capture) => (
+                  <option key={capture.id} value={capture.id}>
+                    {capture.name} - {new Date(capture.savedAt).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="capture-actions">
+              <button
+                disabled={!selectedCapture}
+                onClick={() => restoreWorkspaceCapture()}
+                type="button"
+              >
+                Restore
+              </button>
+              <button
+                disabled={!selectedCapture}
+                onClick={() => deleteWorkspaceCapture()}
+                type="button"
+              >
+                Delete
+              </button>
+            </div>
             <button type="button" onClick={() => setView(START_VIEW)}>
               Reset view
             </button>
@@ -2382,7 +2750,23 @@ const App = () => {
                     }
                     aria-hidden={openToolMenu !== value}
                   >
-                      {value === "square" ? (
+                      {value === "line" ? (
+                        <>
+                          <label className="toggle">
+                            <input
+                              checked={referenceLineMode}
+                              onChange={(event) =>
+                                setReferenceLineMode(event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                            <span>Reference dotted line</span>
+                          </label>
+                          <span>
+                            When enabled, new lines are finite dotted guide lines.
+                          </span>
+                        </>
+                      ) : value === "square" ? (
                         <>
                           <label className="toggle">
                             <input
@@ -2513,6 +2897,14 @@ const App = () => {
         {workspaceMode === "surface" ? (
           <section className="control-section">
             <h2>3D Shapes</h2>
+            <div className="surface-add-row">
+              <button onClick={addSurfaceShape} type="button">
+                Add surface
+              </button>
+              <button onClick={addSurfaceCube} type="button">
+                Add cube
+              </button>
+            </div>
             <label className="field">
               <span>Selected shape</span>
               <select
@@ -2523,22 +2915,24 @@ const App = () => {
               >
                 {surfaceShapes.map((shape) => (
                   <option key={shape.id} value={shape.id}>
-                    {shape.name}
+                    {(shape.type ?? "surface") === "cube" ? "Cube" : "Surface"}: {shape.name}
                   </option>
                 ))}
               </select>
             </label>
-            <label className="field">
-              <span>z = f(x, y)</span>
-              <input
-                onChange={(event) =>
-                  updateSelectedSurfaceShape({ equation: event.target.value })
-                }
-                spellCheck={false}
-                type="text"
-                value={surfaceEquation}
-              />
-            </label>
+            {selectedSurfaceType === "surface" ? (
+              <label className="field">
+                <span>z = f(x, y)</span>
+                <input
+                  onChange={(event) =>
+                    updateSelectedSurfaceShape({ equation: event.target.value })
+                  }
+                  spellCheck={false}
+                  type="text"
+                  value={surfaceEquation}
+                />
+              </label>
+            ) : null}
             <label className="field">
               <span>Range</span>
               <input
@@ -2574,58 +2968,91 @@ const App = () => {
             </label>
             {selectedSurfaceShape ? (
               <div className="surface-transform-fields">
-                <label className="field">
-                  <span>Scale</span>
-                  <input
-                    max="3"
-                    min="0.2"
-                    onChange={(event) => {
-                      const value = Number(event.target.value);
-                      updateSelectedSurfaceShape({
-                        scale: { x: value, y: value, z: value },
-                      });
-                    }}
-                    step="0.05"
-                    type="range"
-                    value={selectedSurfaceShape.scale.x}
-                  />
-                </label>
-                <label className="field">
-                  <span>Stretch x</span>
-                  <input
-                    max="3"
-                    min="0.2"
-                    onChange={(event) =>
-                      updateSelectedSurfaceShape({
-                        scale: {
-                          ...selectedSurfaceShape.scale,
-                          x: Number(event.target.value),
-                        },
-                      })
-                    }
-                    step="0.05"
-                    type="range"
-                    value={selectedSurfaceShape.scale.x}
-                  />
-                </label>
-                <label className="field">
-                  <span>Stretch y</span>
-                  <input
-                    max="3"
-                    min="0.2"
-                    onChange={(event) =>
-                      updateSelectedSurfaceShape({
-                        scale: {
-                          ...selectedSurfaceShape.scale,
-                          z: Number(event.target.value),
-                        },
-                      })
-                    }
-                    step="0.05"
-                    type="range"
-                    value={selectedSurfaceShape.scale.z}
-                  />
-                </label>
+                {selectedSurfaceType === "surface" ? (
+                  <>
+                    <label className="field">
+                      <span>Scale</span>
+                      <input
+                        max="3"
+                        min="0.2"
+                        onChange={(event) => {
+                          const value = Number(event.target.value);
+                          updateSelectedSurfaceShape({
+                            scale: { x: value, y: value, z: value },
+                          });
+                        }}
+                        step="0.05"
+                        type="range"
+                        value={selectedSurfaceShape.scale.x}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Stretch x</span>
+                      <input
+                        max="3"
+                        min="0.2"
+                        onChange={(event) =>
+                          updateSelectedSurfaceShape({
+                            scale: {
+                              ...selectedSurfaceShape.scale,
+                              x: Number(event.target.value),
+                            },
+                          })
+                        }
+                        step="0.05"
+                        type="range"
+                        value={selectedSurfaceShape.scale.x}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Stretch y</span>
+                      <input
+                        max="3"
+                        min="0.2"
+                        onChange={(event) =>
+                          updateSelectedSurfaceShape({
+                            scale: {
+                              ...selectedSurfaceShape.scale,
+                              z: Number(event.target.value),
+                            },
+                          })
+                        }
+                        step="0.05"
+                        type="range"
+                        value={selectedSurfaceShape.scale.z}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    {([
+                      ["x", "Width x"],
+                      ["y", "Height z"],
+                      ["z", "Depth y"],
+                    ] as Array<[keyof SurfaceVector3, string]>).map(([axis, label]) => (
+                      <label className="field" key={axis}>
+                        <span>
+                          {label}: {formatNumber(selectedSurfaceShape.scale[axis])}
+                        </span>
+                        <input
+                          max="8"
+                          min="0.1"
+                          onChange={(event) =>
+                            updateSelectedSurfaceShape({
+                              scale: {
+                                ...selectedSurfaceShape.scale,
+                                [axis]: Number(event.target.value),
+                              },
+                            })
+                          }
+                          step="0.1"
+                          type="range"
+                          value={selectedSurfaceShape.scale[axis]}
+                        />
+                      </label>
+                    ))}
+                  </>
+                )}
               </div>
             ) : null}
             <div className="surface-slice-controls">
@@ -2645,6 +3072,22 @@ const App = () => {
                 />
                 <span>Show contour view</span>
               </label>
+              <div className="surface-panel-toggle">
+                <button
+                  className={surfacePanelView === "contour" ? "active" : ""}
+                  onClick={() => setSurfacePanelView("contour")}
+                  type="button"
+                >
+                  Contour
+                </button>
+                <button
+                  className={surfacePanelView === "flat" ? "active" : ""}
+                  onClick={() => setSurfacePanelView("flat")}
+                  type="button"
+                >
+                  2D x/y
+                </button>
+              </div>
               <label className="field">
                 <span>Vertical x cut: {surfaceCutX}</span>
                 <input
@@ -3080,6 +3523,14 @@ const App = () => {
                       return (
                         <>
                     <span>L{index + 1}</span>
+                    <input
+                      aria-label={`Change line ${index + 1} color`}
+                      className="row-color-input"
+                      onChange={(event) => updateObjectColor(target, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      type="color"
+                      value={line.color}
+                    />
                     <code>{getLineLabel(line)}</code>
                     <button
                       aria-label={
@@ -3142,6 +3593,14 @@ const App = () => {
                       return (
                         <>
                     <span>C{index + 1}</span>
+                    <input
+                      aria-label={`Change curve ${index + 1} color`}
+                      className="row-color-input"
+                      onChange={(event) => updateObjectColor(target, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      type="color"
+                      value={curve.color}
+                    />
                     <code>{getCurveLabel(curve)}</code>
                     <button
                       aria-label={
@@ -3204,6 +3663,14 @@ const App = () => {
                       return (
                         <>
                     <span>S{index + 1}</span>
+                    <input
+                      aria-label={`Change shape ${index + 1} color`}
+                      className="row-color-input"
+                      onChange={(event) => updateObjectColor(target, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      type="color"
+                      value={shape.color}
+                    />
                     <code>{getShapeDisplayLabel(shape)}</code>
                     <button
                       aria-label={
@@ -3248,8 +3715,8 @@ const App = () => {
                   <div
                     className={
                       isSelectedObject(selectedObject, "measure", measure.id)
-                        ? "equation-row selected"
-                        : "equation-row"
+                        ? "equation-row measure-row selected"
+                        : "equation-row measure-row"
                     }
                     key={`measure-${measure.id}`}
                     onClick={() => setSelectedObject({ kind: "measure", id: measure.id })}
@@ -3267,6 +3734,14 @@ const App = () => {
                       return (
                         <>
                     <span>D{index + 1}</span>
+                    <input
+                      aria-label={`Change distance marker ${index + 1} color`}
+                      className="row-color-input"
+                      onChange={(event) => updateObjectColor(target, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      type="color"
+                      value={measure.color}
+                    />
                     <code>{getMeasureDisplayLabel(measure)}</code>
                     <button
                       aria-label={
@@ -3540,6 +4015,7 @@ const App = () => {
                 shapes={surfaceShapes}
                 showContour={surfaceShowContour}
                 showSlices={surfaceShowSlices}
+                surfacePanelView={surfacePanelView}
                 strokes={surfaceStrokes}
                 tool={surfaceTool}
                 zoomSensitivity={zoomSensitivity}
@@ -3577,6 +4053,20 @@ const App = () => {
                 selectedColor={selectedColor}
                 tool={canvasTool}
               />
+              {points.map((point, index) =>
+                point.showLabel === false ? null : (
+                  <PointGraphLabel
+                    color={point.color ?? "#d94f30"}
+                    key={`point-label-${point.id}`}
+                    label={getPointLabel(point, index)}
+                    onBeginDrag={() => pushHistory()}
+                    onDrag={(clientX, clientY, grabOffset) =>
+                      movePointLabel(point.id, clientX, clientY, grabOffset)
+                    }
+                    style={getPointLabelStyle(point)}
+                  />
+                )
+              )}
               {lines.map((line) => {
                 const target: ObjectTarget = { kind: "line", id: line.id };
                 if (!shouldShowOverlay(target, line.showLabel)) return null;
@@ -3596,14 +4086,18 @@ const App = () => {
                     style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
                   >
                     <LabelEditor
-                      fallback={formatLineEquation(line)}
+                      fallback={line.reference ? "reference line" : formatLineEquation(line)}
                       label={line.label}
                       onChange={(label) => updateObjectLabel(target, label)}
                     />
-                    <LineEditor
-                      line={line}
-                      onChange={(next) => updateLineFromEquation(line.id, next)}
-                    />
+                    {line.reference ? (
+                      <p className="mini-note">Drag endpoints to aim this dotted reference line.</p>
+                    ) : (
+                      <LineEditor
+                        line={line}
+                        onChange={(next) => updateLineFromEquation(line.id, next)}
+                      />
+                    )}
                   </InlineGraphLabel>
                 );
               })}
@@ -3673,8 +4167,6 @@ const App = () => {
               {measures.map((measure) => {
                 const target: ObjectTarget = { kind: "measure", id: measure.id };
                 if (!shouldShowOverlay(target, measure.showLabel)) return null;
-                const a = getCanvasPoint(measure.a);
-                const b = getCanvasPoint(measure.b);
                 const active = isOverlayActive(target);
                 return (
                   <InlineGraphLabel
@@ -3686,7 +4178,11 @@ const App = () => {
                     onPointerDown={() => setSelectedObject(target)}
                     onShow={() => updateLabelVisibility(target, true)}
                     showLabel={measure.showLabel}
-                    style={getLabelStyle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })}
+                    onBeginLabelDrag={() => pushHistory()}
+                    onLabelDrag={(clientX, clientY) =>
+                      moveMeasureLabel(measure.id, clientX, clientY)
+                    }
+                    style={getMeasureLabelStyle(measure)}
                   >
                     <LabelEditor
                       fallback={formatMeasureLabel(measure)}
@@ -3725,7 +4221,7 @@ const getPointLabel = (point: GraphPoint, index: number) =>
   point.label?.trim() || `P${index + 1}`;
 
 const getLineLabel = (line: GraphLine) =>
-  line.label?.trim() || formatLineEquation(line);
+  line.label?.trim() || (line.reference ? "reference line" : formatLineEquation(line));
 
 const getCurveLabel = (curve: GraphCurve) =>
   curve.label?.trim() || formatCurveEquation(curve);
@@ -3803,7 +4299,9 @@ const InlineGraphLabel = ({
   children,
   color,
   label,
+  onBeginLabelDrag,
   onHide,
+  onLabelDrag,
   onPointerDown,
   onShow,
   showLabel,
@@ -3813,44 +4311,130 @@ const InlineGraphLabel = ({
   children: ReactNode;
   color: string;
   label: string;
+  onBeginLabelDrag?: () => void;
   onHide: () => void;
+  onLabelDrag?: (clientX: number, clientY: number) => void;
   onPointerDown: () => void;
   onShow: () => void;
   showLabel: boolean;
   style: { left: number; top: number };
-}) => (
-  <div
-    className={active ? "inline-graph-label active" : "inline-graph-label"}
-    onPointerDown={(event) => {
-      event.stopPropagation();
-      onPointerDown();
-      if (!showLabel) onShow();
-    }}
-    style={{
-      ...style,
-      borderColor: color,
-      color,
-    }}
-  >
-    <div className="inline-label-main">
-      <button
-        aria-label={showLabel ? "Hide label" : "Show label"}
-        className="inline-label-toggle"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (showLabel) onHide();
-          else onShow();
-        }}
-        type="button"
-      >
-        {showLabel ? "x" : "+"}
-      </button>
-      <span>{label}</span>
+}) => {
+  const dragRef = useRef<{ pointerId: number; moved: boolean } | null>(null);
+
+  return (
+    <div
+      className={active ? "inline-graph-label active" : "inline-graph-label"}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onPointerDown();
+        if (!showLabel) onShow();
+
+        const target = event.target as HTMLElement;
+        if (
+          !onLabelDrag ||
+          target.closest("button, input, select, textarea, .inline-label-editor")
+        ) {
+          return;
+        }
+
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = { pointerId: event.pointerId, moved: false };
+        onBeginLabelDrag?.();
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId || !onLabelDrag) return;
+        drag.moved = true;
+        onLabelDrag(event.clientX, event.clientY);
+      }}
+      onPointerUp={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        dragRef.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      style={{
+        ...style,
+        borderColor: color,
+        color,
+      }}
+    >
+      <div className={onLabelDrag ? "inline-label-main draggable" : "inline-label-main"}>
+        <button
+          aria-label={showLabel ? "Hide label" : "Show label"}
+          className="inline-label-toggle"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (showLabel) onHide();
+            else onShow();
+          }}
+          type="button"
+        >
+          {showLabel ? "x" : "+"}
+        </button>
+        <span>{label}</span>
+      </div>
+      {active && showLabel ? <div className="inline-label-editor">{children}</div> : null}
     </div>
-    {active && showLabel ? <div className="inline-label-editor">{children}</div> : null}
-  </div>
-);
+  );
+};
+
+const PointGraphLabel = ({
+  color,
+  label,
+  onBeginDrag,
+  onDrag,
+  style,
+}: {
+  color: string;
+  label: string;
+  onBeginDrag: () => void;
+  onDrag: (clientX: number, clientY: number, grabOffset: { x: number; y: number }) => void;
+  style: { left: number; top: number };
+}) => {
+  const dragRef = useRef<{
+    pointerId: number;
+    grabOffset: { x: number; y: number };
+  } | null>(null);
+
+  return (
+    <div
+      className="point-graph-label"
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = {
+          pointerId: event.pointerId,
+          grabOffset: {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top,
+          },
+        };
+        onBeginDrag();
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        onDrag(event.clientX, event.clientY, drag.grabOffset);
+      }}
+      onPointerUp={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        dragRef.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      style={{
+        ...style,
+        borderColor: color,
+        color,
+      }}
+    >
+      {label}
+    </div>
+  );
+};
 
 const LabelEditor = ({
   fallback,
@@ -4317,6 +4901,16 @@ const drawGraph = (
   graph.lines.forEach((line, index) => {
     const isSelected = isSelectedObject(graph.selectedObject, "line", line.id);
     const drawVisibleLine = () => {
+      if (line.reference) {
+        const a = toScreen(line.a);
+        const b = toScreen(line.b);
+        context.beginPath();
+        context.moveTo(a.x, a.y);
+        context.lineTo(b.x, b.y);
+        context.stroke();
+        return;
+      }
+
       const parts = getLineParts(line);
       context.beginPath();
       if (parts.vertical) {
@@ -4337,12 +4931,16 @@ const drawGraph = (
     if (isSelected) {
       context.strokeStyle = "rgba(36, 33, 30, 0.28)";
       context.lineWidth = 7;
+      if (line.reference) context.setLineDash([5, 6]);
       drawVisibleLine();
+      context.setLineDash([]);
     }
 
     context.strokeStyle = line.color;
     context.lineWidth = 2.5;
+    if (line.reference) context.setLineDash([4, 6]);
     drawVisibleLine();
+    context.setLineDash([]);
 
     [line.a, line.b].forEach((point, handleIndex) => {
       drawHandle(context, toScreen(point), line.color);
@@ -4478,10 +5076,6 @@ const drawGraph = (
     context.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
     context.fill();
     context.stroke();
-    if (point.showLabel !== false) {
-      context.fillStyle = "#24211e";
-      context.fillText(getPointLabel(point, index), screen.x + 9, screen.y - 18);
-    }
   });
 
   drawCanvasStrokes(context, graph.canvasStrokes, toScreen);
