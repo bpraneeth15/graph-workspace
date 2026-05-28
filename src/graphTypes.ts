@@ -5,6 +5,8 @@ export type GraphPoint = {
   color?: string;
   label?: string;
   showLabel?: boolean;
+  labelDx?: number;
+  labelDy?: number;
 };
 
 export type ViewState = {
@@ -45,6 +47,7 @@ export type SurfaceVector3 = {
 
 export type SurfaceShape = {
   id: number;
+  type?: "surface" | "cube";
   name: string;
   equation: string;
   color: string;
@@ -71,6 +74,7 @@ export type GraphLine = {
   color: string;
   showLabel: boolean;
   label?: string;
+  reference?: boolean;
 };
 
 export type GraphCurve = {
@@ -101,6 +105,7 @@ export type GraphMeasure = {
   showLabel: boolean;
   showEndpointLabels?: boolean;
   label?: string;
+  labelT?: number;
 };
 
 export type DataPlotStyle = "scatter" | "line" | "scatter-line" | "bar";

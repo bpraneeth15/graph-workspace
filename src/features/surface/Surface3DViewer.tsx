@@ -33,10 +33,13 @@ type Surface3DViewerProps = {
   shapes: SurfaceShape[];
   showContour: boolean;
   showSlices: boolean;
+  surfacePanelView: SurfacePanelView;
   strokes: SurfaceStroke[];
   tool: SurfaceTool;
   zoomSensitivity: number;
 };
+
+type SurfacePanelView = "contour" | "flat";
 
 const SAFE_NAMES = [
   "abs",
@@ -78,6 +81,7 @@ export const Surface3DViewer = ({
   shapes,
   showContour,
   showSlices,
+  surfacePanelView,
   strokes,
   tool,
   zoomSensitivity,
@@ -104,6 +108,7 @@ export const Surface3DViewer = ({
         shapes={shapes}
         showContour={showContour}
         showSlices={showSlices}
+        surfacePanelView={surfacePanelView}
         strokes={strokes}
         tool={tool}
         zoomSensitivity={zoomSensitivity}
@@ -132,6 +137,7 @@ export const Surface3DViewer = ({
       shapes={shapes}
       showContour={showContour}
       showSlices={showSlices}
+      surfacePanelView={surfacePanelView}
       strokes={strokes}
       tool={tool}
       zoomSensitivity={zoomSensitivity}
@@ -159,6 +165,7 @@ const SurfaceGpuViewer = ({
   shapes,
   showContour,
   showSlices,
+  surfacePanelView,
   strokes,
   tool,
   zoomSensitivity,
@@ -688,12 +695,15 @@ const SurfaceGpuViewer = ({
     const surface = new THREE.Group();
     shapeObjectsRef.current.clear();
     shapes.forEach((shape) => {
-      const shapeObject = buildSurfaceMesh(
-        compileSurfaceEquation(shape.equation),
-        range,
-        resolution,
-        shape.color
-      );
+      const shapeObject =
+        (shape.type ?? "surface") === "cube"
+          ? buildCubeMesh(shape.color)
+          : buildSurfaceMesh(
+              compileSurfaceEquation(shape.equation),
+              range,
+              resolution,
+              shape.color
+            );
       shapeObject.userData.surfaceShapeId = shape.id;
       shapeObject.position.set(shape.position.x, shape.position.y, shape.position.z);
       shapeObject.scale.set(shape.scale.x, shape.scale.y, shape.scale.z);
@@ -764,8 +774,10 @@ const SurfaceGpuViewer = ({
           cutY={cutY}
           cutZ={cutZ}
           equation={equation}
+          mode={surfacePanelView}
           range={range}
           resolution={resolution}
+          shapes={shapes}
           showSlices={showSlices}
         />
       ) : null}
@@ -781,8 +793,10 @@ const SurfaceCanvasViewer = ({
   equation,
   range,
   resolution,
+  shapes,
   showContour,
   showSlices,
+  surfacePanelView,
 }: Omit<Surface3DViewerProps, "renderer">) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -853,8 +867,10 @@ const SurfaceCanvasViewer = ({
           cutY={cutY}
           cutZ={cutZ}
           equation={equation}
+          mode={surfacePanelView}
           range={range}
           resolution={resolution}
+          shapes={shapes}
           showSlices={showSlices}
         />
       ) : null}
@@ -919,6 +935,32 @@ const buildSurfaceMesh = (
     })
   );
   group.add(wire);
+
+  return group;
+};
+
+const buildCubeMesh = (color: string) => {
+  const group = new THREE.Group();
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    metalness: 0,
+    opacity: 0.58,
+    roughness: 0.55,
+    transparent: true,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  group.add(mesh);
+
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({
+      color: 0x151719,
+      opacity: 0.72,
+      transparent: true,
+    })
+  );
+  group.add(edges);
 
   return group;
 };
@@ -1085,16 +1127,20 @@ const SurfaceContourMap = ({
   cutY,
   cutZ,
   equation,
+  mode,
   range,
   resolution,
+  shapes,
   showSlices,
 }: {
   cutX: number;
   cutY: number;
   cutZ: number;
   equation: string;
+  mode: SurfacePanelView;
   range: number;
   resolution: number;
+  shapes: SurfaceShape[];
   showSlices: boolean;
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1117,6 +1163,16 @@ const SurfaceContourMap = ({
     context.fillStyle = "rgba(255,255,255,0.96)";
     context.fillRect(0, 0, width, height);
 
+    const toCanvas = (point: ContourPoint) => ({
+      x: plot.x + ((point.x + range) / (range * 2)) * plot.width,
+      y: plot.y + ((range - point.y) / (range * 2)) * plot.height,
+    });
+
+    if (mode === "flat") {
+      drawSurfaceFlatView(context, plot, range, shapes, toCanvas);
+      return;
+    }
+
     const evaluator = compileSurfaceEquation(equation);
     const cells = Math.max(28, Math.min(72, Math.round(resolution)));
     const samples: number[] = [];
@@ -1132,11 +1188,6 @@ const SurfaceContourMap = ({
     const levels = Array.from({ length: 9 }, (_, index) =>
       min + ((index + 1) / 10) * (max - min || 1)
     );
-    const toCanvas = (point: ContourPoint) => ({
-      x: plot.x + ((point.x + range) / (range * 2)) * plot.width,
-      y: plot.y + ((range - point.y) / (range * 2)) * plot.height,
-    });
-
     context.strokeStyle = "#d4d8de";
     context.lineWidth = 1;
     context.strokeRect(plot.x, plot.y, plot.width, plot.height);
@@ -1187,13 +1238,98 @@ const SurfaceContourMap = ({
     context.restore();
     context.fillText(formatSurfaceTick(range), 8, plot.y + 4);
     context.fillText(formatSurfaceTick(-range), 8, plot.y + plot.height + 4);
-  }, [cutX, cutY, cutZ, equation, range, resolution, showSlices]);
+  }, [cutX, cutY, cutZ, equation, mode, range, resolution, shapes, showSlices]);
 
   return (
     <div className="surface-contour-panel">
       <canvas aria-label="Live contour view" ref={canvasRef} />
     </div>
   );
+};
+
+const drawSurfaceFlatView = (
+  context: CanvasRenderingContext2D,
+  plot: { x: number; y: number; width: number; height: number },
+  range: number,
+  shapes: SurfaceShape[],
+  toCanvas: (point: ContourPoint) => { x: number; y: number }
+) => {
+  context.strokeStyle = "#d4d8de";
+  context.lineWidth = 1;
+  context.strokeRect(plot.x, plot.y, plot.width, plot.height);
+
+  context.font = "600 9px Inter, Arial, sans-serif";
+  context.fillStyle = "#6b7280";
+  const tickStep = getSurfaceTickStep(range);
+  for (let value = -range; value <= range + 0.0001; value += tickStep) {
+    const rounded = roundSurfaceTick(value);
+    const xTick = toCanvas({ x: rounded, y: -range });
+    const yTick = toCanvas({ x: -range, y: rounded });
+    context.strokeStyle = Math.abs(rounded) < 0.0001 ? "#151719" : "#e3e6ea";
+    context.beginPath();
+    context.moveTo(xTick.x, plot.y);
+    context.lineTo(xTick.x, plot.y + plot.height);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(plot.x, yTick.y);
+    context.lineTo(plot.x + plot.width, yTick.y);
+    context.stroke();
+    if (Math.abs(rounded) > 0.0001) {
+      context.fillText(formatSurfaceTick(rounded), xTick.x - 6, plot.y + plot.height + 12);
+      context.fillText(formatSurfaceTick(rounded), plot.x - 22, yTick.y + 3);
+    }
+  }
+
+  shapes.forEach((shape) => {
+    const base = hexToRgb(shape.color);
+    const alphaFill = `rgba(${base.r}, ${base.g}, ${base.b}, 0.16)`;
+    const alphaStroke = `rgba(${base.r}, ${base.g}, ${base.b}, 0.86)`;
+    context.strokeStyle = alphaStroke;
+    context.fillStyle = alphaFill;
+    context.lineWidth = (shape.type ?? "surface") === "cube" ? 2 : 1.5;
+
+    if ((shape.type ?? "surface") === "cube") {
+      const left = shape.position.x - shape.scale.x / 2;
+      const right = shape.position.x + shape.scale.x / 2;
+      const bottom = shape.position.z - shape.scale.z / 2;
+      const top = shape.position.z + shape.scale.z / 2;
+      const start = toCanvas({ x: left, y: top });
+      const end = toCanvas({ x: right, y: bottom });
+      context.setLineDash([]);
+      context.fillRect(start.x, start.y, end.x - start.x, end.y - start.y);
+      context.strokeRect(start.x, start.y, end.x - start.x, end.y - start.y);
+    } else {
+      const left = shape.position.x - range * shape.scale.x;
+      const right = shape.position.x + range * shape.scale.x;
+      const bottom = shape.position.z - range * shape.scale.z;
+      const top = shape.position.z + range * shape.scale.z;
+      const start = toCanvas({ x: left, y: top });
+      const end = toCanvas({ x: right, y: bottom });
+      context.setLineDash([5, 3]);
+      context.strokeRect(start.x, start.y, end.x - start.x, end.y - start.y);
+      context.setLineDash([]);
+    }
+
+    const center = toCanvas({ x: shape.position.x, y: shape.position.z });
+    context.fillStyle = alphaStroke;
+    context.beginPath();
+    context.arc(center.x, center.y, 3, 0, Math.PI * 2);
+    context.fill();
+    context.font = "700 10px Inter, Arial, sans-serif";
+    context.fillText(shape.name, center.x + 5, center.y - 5);
+  });
+
+  context.setLineDash([]);
+  context.fillStyle = "#151719";
+  context.font = "700 11px Inter, Arial, sans-serif";
+  context.fillText("2D x/y", 8, 12);
+  context.font = "600 10px Inter, Arial, sans-serif";
+  context.fillText("x", plot.x + plot.width / 2 - 3, plot.y + plot.height + 28);
+  context.save();
+  context.translate(10, plot.y + plot.height / 2 + 4);
+  context.rotate(-Math.PI / 2);
+  context.fillText("y", 0, 0);
+  context.restore();
 };
 
 const buildAxes = (range: number) => {

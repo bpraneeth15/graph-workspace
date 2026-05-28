@@ -111,6 +111,8 @@ button:disabled {
   display: grid;
   gap: 6px;
   min-width: 170px;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 24px));
   border: 1px solid #d8dee4;
   border-radius: 7px;
   background: #ffffff;
@@ -123,6 +125,17 @@ button:disabled {
   min-height: 30px;
   padding: 0 9px;
   text-align: left;
+}
+
+.app-menu-dropdown .compact-field {
+  min-width: 280px;
+  gap: 4px;
+}
+
+.capture-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
 }
 
 .tools-dropdown {
@@ -617,6 +630,29 @@ button:disabled {
   color: #174c53;
 }
 
+.surface-add-row,
+.surface-panel-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.surface-add-row button,
+.surface-panel-toggle button {
+  min-height: 32px;
+  border-color: #cfd5da;
+  background: #ffffff;
+  color: #263238;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.surface-panel-toggle button.active {
+  border-color: #28666e;
+  background: #e6f1f3;
+  color: #174c53;
+}
+
 .renderer-status {
   margin: -2px 0 0;
   border: 1px solid #e1e7ec;
@@ -949,8 +985,12 @@ button:disabled {
 }
 
 .equation-row {
-  grid-template-columns: 40px minmax(0, 1fr) 34px 34px;
+  grid-template-columns: 40px 30px minmax(0, 1fr) 34px 34px;
   cursor: pointer;
+}
+
+.equation-row.measure-row {
+  grid-template-columns: 40px 30px minmax(0, 1fr) 34px 34px 34px;
 }
 
 .equation-row.data-row {
@@ -1333,6 +1373,14 @@ button:disabled {
   white-space: nowrap;
 }
 
+.inline-label-main.draggable {
+  cursor: grab;
+}
+
+.inline-label-main.draggable:active {
+  cursor: grabbing;
+}
+
 .inline-label-main span {
   min-width: 0;
   overflow: hidden;
@@ -1369,6 +1417,30 @@ button:disabled {
   padding-top: 6px;
   color: #151719;
   font-weight: 500;
+}
+
+.point-graph-label {
+  position: absolute;
+  z-index: 6;
+  max-width: min(160px, calc(100% - 16px));
+  overflow: hidden;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+  padding: 2px 5px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.point-graph-label:active {
+  cursor: grabbing;
 }
 
 .scientific-calculator {
@@ -1765,7 +1837,8 @@ textarea {
 
 .segmented button.active,
 .surface-tool-grid button.active,
-.renderer-toggle button.active {
+.renderer-toggle button.active,
+.surface-panel-toggle button.active {
   border-color: var(--ui-accent);
   background: linear-gradient(145deg, #365880, #284766);
   color: #ffffff;
@@ -1859,7 +1932,9 @@ textarea {
   background: var(--ui-accent);
 }
 
-.renderer-toggle button {
+.renderer-toggle button,
+.surface-add-row button,
+.surface-panel-toggle button {
   border-color: var(--ui-border);
   background: #2d3035;
   color: var(--ui-text);
