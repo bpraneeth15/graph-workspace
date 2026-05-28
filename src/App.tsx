@@ -209,7 +209,7 @@ const App = () => {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("2d");
   const [selectedColor, setSelectedColor] = useState(COLOR_SWATCHES[0]);
   const [snapToGrid, setSnapToGrid] = useState(true);
-  const [snapStep, setSnapStep] = useState(0.1);
+  const [snapStep, setSnapStep] = useState(SUBGRID_STEP);
   const [connectPoints, setConnectPoints] = useState(false);
   const [showLeastSquares, setShowLeastSquares] = useState(false);
   const [cursor, setCursor] = useState<GraphPoint | null>(null);
@@ -590,6 +590,7 @@ const App = () => {
         b,
         color: selectedColor,
         showLabel: true,
+        showEndpointLabels: true,
       },
     ]);
   };
@@ -1164,6 +1165,18 @@ const App = () => {
         )
       );
     }
+  };
+
+  const updateMeasureEndpointLabelVisibility = (
+    measureId: number,
+    showEndpointLabels: boolean
+  ) => {
+    pushHistory();
+    setMeasures((current) =>
+      current.map((measure) =>
+        measure.id === measureId ? { ...measure, showEndpointLabels } : measure
+      )
+    );
   };
 
   const updateLineFromEquation = (
@@ -2512,7 +2525,7 @@ const App = () => {
             <span>Snap when clicking</span>
           </label>
           <label className="field">
-            <span>Click precision</span>
+            <span>Mouse snap precision</span>
             <select
               disabled={!snapToGrid}
               onChange={(event) => setSnapStep(Number(event.target.value))}
@@ -2520,7 +2533,7 @@ const App = () => {
             >
               {SNAP_STEPS.map((step) => (
                 <option key={step} value={step}>
-                  {step} unit
+                  {step === SUBGRID_STEP ? `${step} unit (visible quarter grid)` : `${step} unit`}
                 </option>
               ))}
             </select>
@@ -2973,6 +2986,7 @@ const App = () => {
                   >
                     {(() => {
                       const target: ObjectTarget = { kind: "measure", id: measure.id };
+                      const showEndpointLabels = measure.showEndpointLabels ?? true;
                       return (
                         <>
                     <span>D{index + 1}</span>
@@ -2997,6 +3011,33 @@ const App = () => {
                       type="button"
                     >
                       {measure.showLabel ? "-" : "+"}
+                    </button>
+                    <button
+                      aria-label={
+                        showEndpointLabels
+                          ? `Hide distance marker ${index + 1} endpoint labels`
+                          : `Show distance marker ${index + 1} endpoint labels`
+                      }
+                      className={
+                        showEndpointLabels
+                          ? "equation-label-toggle active"
+                          : "equation-label-toggle"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateMeasureEndpointLabelVisibility(
+                          measure.id,
+                          !showEndpointLabels
+                        );
+                      }}
+                      title={
+                        showEndpointLabels
+                          ? "Hide endpoint labels"
+                          : "Show endpoint labels"
+                      }
+                      type="button"
+                    >
+                      {showEndpointLabels ? "D" : "+D"}
                     </button>
                     <button
                       aria-label={`Delete distance marker ${index + 1}`}
@@ -3773,8 +3814,14 @@ const drawGraph = (
 
     [measure.a, measure.b].forEach((point, handleIndex) => {
       drawHandle(context, toScreen(point), measure.color);
-      context.fillStyle = "#24211e";
-      context.fillText(`D${index + 1}.${handleIndex + 1}`, toScreen(point).x + 9, toScreen(point).y - 18);
+      if (measure.showEndpointLabels ?? true) {
+        context.fillStyle = "#24211e";
+        context.fillText(
+          `D${index + 1}.${handleIndex + 1}`,
+          toScreen(point).x + 9,
+          toScreen(point).y - 18
+        );
+      }
     });
   });
 

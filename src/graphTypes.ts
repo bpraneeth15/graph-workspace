@@ -94,6 +94,7 @@ export type GraphMeasure = {
   b: GraphPoint;
   color: string;
   showLabel: boolean;
+  showEndpointLabels?: boolean;
 };
 
 export type DataPlotStyle = "scatter" | "line" | "scatter-line" | "bar";
