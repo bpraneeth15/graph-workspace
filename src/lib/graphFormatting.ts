@@ -167,6 +167,68 @@ export const getShapeBounds = (shape: Pick<GraphShape, "a" | "b">) => {
   return { x, y, width, height };
 };
 
+export type ShapeVertex = "nw" | "ne" | "se" | "sw";
+
+export const SHAPE_VERTICES: ShapeVertex[] = ["nw", "ne", "se", "sw"];
+
+export const getShapeCenter = (shape: Pick<GraphShape, "a" | "b">): GraphPoint => ({
+  id: 0,
+  x: (shape.a.x + shape.b.x) / 2,
+  y: (shape.a.y + shape.b.y) / 2,
+});
+
+export const rotatePointAround = (
+  point: GraphPoint,
+  center: GraphPoint,
+  rotation = 0
+): GraphPoint => {
+  if (Math.abs(rotation) < 0.000001) return { ...point };
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
+  return {
+    ...point,
+    x: center.x + dx * cosine - dy * sine,
+    y: center.y + dx * sine + dy * cosine,
+  };
+};
+
+export const getShapeCorners = (
+  shape: Pick<GraphShape, "a" | "b" | "rotation">
+): Record<ShapeVertex, GraphPoint> => {
+  const bounds = getShapeBounds(shape);
+  const center = getShapeCenter(shape);
+  const left = bounds.x;
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y;
+  const top = bounds.y + bounds.height;
+  const rotation = shape.rotation ?? 0;
+  return {
+    nw: rotatePointAround({ id: 0, x: left, y: top }, center, rotation),
+    ne: rotatePointAround({ id: 0, x: right, y: top }, center, rotation),
+    se: rotatePointAround({ id: 0, x: right, y: bottom }, center, rotation),
+    sw: rotatePointAround({ id: 0, x: left, y: bottom }, center, rotation),
+  };
+};
+
+export const getShapeLocalPoint = (
+  shape: Pick<GraphShape, "a" | "b" | "rotation">,
+  tx: number,
+  ty: number
+) => {
+  const bounds = getShapeBounds(shape);
+  return rotatePointAround(
+    {
+      id: 0,
+      x: bounds.x + bounds.width * tx,
+      y: bounds.y + bounds.height * (1 - ty),
+    },
+    getShapeCenter(shape),
+    shape.rotation ?? 0
+  );
+};
+
 export const formatShapeLabel = (shape: GraphShape) => {
   const bounds = getShapeBounds(shape);
   if (shape.type === "square") {

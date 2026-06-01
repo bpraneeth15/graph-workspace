@@ -95,6 +95,11 @@ export type GraphShape = {
   color: string;
   showLabel: boolean;
   label?: string;
+  areaLabelTx?: number;
+  areaLabelTy?: number;
+  rotation?: number;
+  referenceLineId?: number;
+  referenceSide?: 1 | -1;
 };
 
 export type GraphMeasure = {

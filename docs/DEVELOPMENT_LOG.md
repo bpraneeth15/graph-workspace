@@ -19,6 +19,22 @@ This log records major product and engineering changes. Keep it updated whenever
 - `npm run build`
 - Dev server served the app at `http://127.0.0.1:5173/`
 
+## 2026-05-31
+
+### Fixed
+
+- Fixed a React render loop that could trigger `Maximum update depth exceeded` after plotting points and a fit line.
+- Memoized least-squares derived data and stopped canvas resize handling from writing unchanged dimensions back into state.
+
+### Added
+
+- Added draggable in-region area labels for squares and rectangles.
+- Added compact editable, draggable text labels to the floating 2D canvas tool palette.
+- Added corner-drag rotation for squares and rectangles, with rotated hit-testing, edge snapping, selection outlines, and in-region area labels.
+- Added square construction from dotted reference lines. The selected reference line, or newest available guide, becomes one exact side of the generated square.
+- Added side selection and flipping for reference-line squares, so construction squares can sit on either side of their dotted guide.
+- Added multi-page graph workspaces with page tabs, a side-by-side comparison preview, and up to three restorable snapshots per page.
+
 ## Earlier Milestones
 
 ### 2D graph workspace

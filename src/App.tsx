@@ -8,6 +8,7 @@ import {
   WheelEvent,
   lazy,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -66,9 +67,15 @@ import {
   getObjectTitle,
   getQuadraticCoefficients,
   getShapeBounds,
+  getShapeCenter,
+  getShapeCorners,
+  getShapeLocalPoint,
   getToolHelp,
   getToolTitle,
   isTypingTarget,
+  rotatePointAround,
+  SHAPE_VERTICES,
+  type ShapeVertex,
 } from "./lib/graphFormatting";
 import {
   clamp,
@@ -87,6 +94,7 @@ const Surface3DViewer = lazy(() =>
 );
 
 const CAPTURE_STORAGE_KEY = "graph-workspace:captures";
+const PAGE_STORAGE_KEY = "graph-workspace:pages";
 
 type GraphSnapshot = {
   points: GraphPoint[];
@@ -96,6 +104,7 @@ type GraphSnapshot = {
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
   canvasStrokes: CanvasStroke[];
+  canvasTextBoxes: CanvasTextBox[];
 };
 
 type WorkspaceCapture = {
@@ -111,6 +120,7 @@ type WorkspaceCapture = {
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
   canvasStrokes: CanvasStroke[];
+  canvasTextBoxes: CanvasTextBox[];
   selectedColor: string;
   surface: {
     selectedShapeId: number;
@@ -135,7 +145,7 @@ type HandleTarget =
   | { kind: "point"; id: number }
   | { kind: "line"; id: number; handle: "a" | "b" }
   | { kind: "curve"; id: number; handle: "a" | "b" | "c" }
-  | { kind: "shape"; id: number; handle: "a" | "b" }
+  | { kind: "shape"; id: number; handle: ShapeVertex }
   | { kind: "measure"; id: number; handle: "a" | "b" }
   | { kind: "data"; id: number; pointIndex: number };
 
@@ -163,7 +173,7 @@ type LeastSquaresSummary = {
   sum: number;
 };
 
-type CanvasTool = "none" | "pencil" | "marker" | "eraser";
+type CanvasTool = "none" | "pencil" | "marker" | "eraser" | "text";
 
 type CanvasStroke = {
   id: number;
@@ -171,7 +181,21 @@ type CanvasStroke = {
   opacity: number;
   width: number;
   points: GraphPoint[];
-  tool: Exclude<CanvasTool, "none" | "eraser">;
+  tool: "pencil" | "marker";
+};
+
+type GraphPage = {
+  id: string;
+  name: string;
+  state: WorkspaceCapture;
+  snapshots: WorkspaceCapture[];
+};
+
+type CanvasTextBox = {
+  id: number;
+  color: string;
+  position: GraphPoint;
+  text: string;
 };
 
 type CanvasToolbarPosition = {
@@ -250,6 +274,10 @@ const cloneSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
     ...stroke,
     points: stroke.points.map(clonePoint),
   })),
+  canvasTextBoxes: (snapshot.canvasTextBoxes ?? []).map((textBox) => ({
+    ...textBox,
+    position: clonePoint(textBox.position),
+  })),
 });
 
 const readWorkspaceCaptures = (): WorkspaceCapture[] => {
@@ -270,6 +298,77 @@ const writeWorkspaceCaptures = (captures: WorkspaceCapture[]) => {
 const getNextId = (items: Array<{ id: number }>) =>
   Math.max(1, ...items.map((item) => item.id + 1));
 
+const cloneWorkspaceCapture = (capture: WorkspaceCapture): WorkspaceCapture =>
+  JSON.parse(JSON.stringify(capture)) as WorkspaceCapture;
+
+const createEmptyWorkspaceCapture = (name = "Page 1"): WorkspaceCapture => ({
+  id: `page-state-${Date.now()}`,
+  name,
+  savedAt: new Date().toISOString(),
+  workspaceMode: "2d",
+  view: { ...START_VIEW },
+  points: [],
+  lines: [],
+  curves: [],
+  shapes: [],
+  measures: [],
+  dataPlots: [],
+  canvasStrokes: [],
+  canvasTextBoxes: [],
+  selectedColor: COLOR_SWATCHES[0],
+  surface: {
+    selectedShapeId: 1,
+    shapes: [
+      {
+        id: 1,
+        type: "surface",
+        name: "Surface 1",
+        equation: "sin(sqrt(x*x + y*y))",
+        color: COLOR_SWATCHES[0],
+        position: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    ],
+    strokes: [],
+    dataPoints: [],
+    range: 6,
+    resolution: 48,
+    showSlices: true,
+    showContour: true,
+    panelView: "contour",
+    cutX: 0,
+    cutY: 0,
+    cutZ: 0,
+    rendererMode: "auto",
+  },
+});
+
+const createGraphPage = (name: string, id = `page-${Date.now()}`): GraphPage => ({
+  id,
+  name,
+  state: createEmptyWorkspaceCapture(name),
+  snapshots: [],
+});
+
+const readGraphPages = (): GraphPage[] => {
+  try {
+    const raw = localStorage.getItem(PAGE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) && parsed.length > 0
+      ? parsed.map((page) => ({
+          ...page,
+          snapshots: Array.isArray(page.snapshots) ? page.snapshots.slice(0, 3) : [],
+        }))
+      : [createGraphPage("Page 1", "page-1")];
+  } catch {
+    return [createGraphPage("Page 1", "page-1")];
+  }
+};
+
+const writeGraphPages = (pages: GraphPage[]) => {
+  localStorage.setItem(PAGE_STORAGE_KEY, JSON.stringify(pages));
+};
+
 const App = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -279,35 +378,50 @@ const App = () => {
   const inertiaFrameRef = useRef<number | null>(null);
   const undoStack = useRef<GraphSnapshot[]>([]);
   const redoStack = useRef<GraphSnapshot[]>([]);
-  const nextPointId = useRef(1);
-  const nextLineId = useRef(1);
-  const nextCurveId = useRef(1);
-  const nextShapeId = useRef(1);
-  const nextMeasureId = useRef(1);
-  const nextDataPlotId = useRef(1);
-  const nextCanvasStrokeId = useRef(1);
-  const nextSurfaceShapeId = useRef(2);
-  const nextSurfaceStrokeId = useRef(1);
-  const nextSurfaceDataPointId = useRef(1);
+  const [pages, setPages] = useState<GraphPage[]>(readGraphPages);
+  const [activePageId, setActivePageId] = useState(() => pages[0].id);
+  const [comparisonPageId, setComparisonPageId] = useState("");
+  const [selectedPageSnapshotId, setSelectedPageSnapshotId] = useState("");
+  const initialWorkspace = pages[0].state;
+  const nextPointId = useRef(getNextId(initialWorkspace.points));
+  const nextLineId = useRef(getNextId(initialWorkspace.lines));
+  const nextCurveId = useRef(getNextId(initialWorkspace.curves));
+  const nextShapeId = useRef(getNextId(initialWorkspace.shapes));
+  const nextMeasureId = useRef(getNextId(initialWorkspace.measures));
+  const nextDataPlotId = useRef(getNextId(initialWorkspace.dataPlots));
+  const nextCanvasStrokeId = useRef(getNextId(initialWorkspace.canvasStrokes ?? []));
+  const nextCanvasTextBoxId = useRef(getNextId(initialWorkspace.canvasTextBoxes ?? []));
+  const nextSurfaceShapeId = useRef(getNextId(initialWorkspace.surface.shapes));
+  const nextSurfaceStrokeId = useRef(getNextId(initialWorkspace.surface.strokes));
+  const nextSurfaceDataPointId = useRef(getNextId(initialWorkspace.surface.dataPoints));
 
-  const [view, setView] = useState<ViewState>(START_VIEW);
-  const [points, setPoints] = useState<GraphPoint[]>([]);
-  const [lines, setLines] = useState<GraphLine[]>([]);
-  const [curves, setCurves] = useState<GraphCurve[]>([]);
-  const [shapes, setShapes] = useState<GraphShape[]>([]);
-  const [measures, setMeasures] = useState<GraphMeasure[]>([]);
-  const [dataPlots, setDataPlots] = useState<DataPlot[]>([]);
-  const [canvasStrokes, setCanvasStrokes] = useState<CanvasStroke[]>([]);
+  const [view, setView] = useState<ViewState>(initialWorkspace.view);
+  const [points, setPoints] = useState<GraphPoint[]>(initialWorkspace.points);
+  const [lines, setLines] = useState<GraphLine[]>(initialWorkspace.lines);
+  const [curves, setCurves] = useState<GraphCurve[]>(initialWorkspace.curves);
+  const [shapes, setShapes] = useState<GraphShape[]>(initialWorkspace.shapes);
+  const [measures, setMeasures] = useState<GraphMeasure[]>(initialWorkspace.measures);
+  const [dataPlots, setDataPlots] = useState<DataPlot[]>(initialWorkspace.dataPlots);
+  const [canvasStrokes, setCanvasStrokes] = useState<CanvasStroke[]>(
+    initialWorkspace.canvasStrokes ?? []
+  );
+  const [canvasTextBoxes, setCanvasTextBoxes] = useState<CanvasTextBox[]>(
+    initialWorkspace.canvasTextBoxes ?? []
+  );
+  const [activeCanvasTextBoxId, setActiveCanvasTextBoxId] = useState<number | null>(null);
   const [draftPoints, setDraftPoints] = useState<GraphPoint[]>([]);
   const [tool, setTool] = useState<Tool>("plot");
   const [openToolMenu, setOpenToolMenu] = useState<Tool>("plot");
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("2d");
-  const [selectedColor, setSelectedColor] = useState(COLOR_SWATCHES[0]);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(
+    initialWorkspace.workspaceMode
+  );
+  const [selectedColor, setSelectedColor] = useState(initialWorkspace.selectedColor);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [snapStep, setSnapStep] = useState(SUBGRID_STEP);
   const [connectPoints, setConnectPoints] = useState(false);
   const [showLeastSquares, setShowLeastSquares] = useState(false);
   const [referenceLineMode, setReferenceLineMode] = useState(false);
+  const [referenceSquareSide, setReferenceSquareSide] = useState<1 | -1>(1);
   const [canvasTool, setCanvasTool] = useState<CanvasTool>("none");
   const [isCanvasToolbarCollapsed, setIsCanvasToolbarCollapsed] = useState(true);
   const [canvasToolbarPosition, setCanvasToolbarPosition] =
@@ -324,30 +438,38 @@ const App = () => {
   const [dataXInput, setDataXInput] = useState("");
   const [dataYInput, setDataYInput] = useState("");
   const [dataError, setDataError] = useState("");
-  const [surfaceShapes, setSurfaceShapes] = useState<SurfaceShape[]>([
-    {
-      id: 1,
-      type: "surface",
-      name: "Surface 1",
-      equation: "sin(sqrt(x*x + y*y))",
-      color: COLOR_SWATCHES[0],
-      position: { x: 0, y: 0, z: 0 },
-      scale: { x: 1, y: 1, z: 1 },
-    },
-  ]);
-  const [selectedSurfaceShapeId, setSelectedSurfaceShapeId] = useState(1);
+  const [surfaceShapes, setSurfaceShapes] = useState<SurfaceShape[]>(
+    initialWorkspace.surface.shapes
+  );
+  const [selectedSurfaceShapeId, setSelectedSurfaceShapeId] = useState(
+    initialWorkspace.surface.selectedShapeId
+  );
   const [surfaceTool, setSurfaceTool] = useState<SurfaceTool>("select");
-  const [surfaceStrokes, setSurfaceStrokes] = useState<SurfaceStroke[]>([]);
-  const [surfaceDataPoints, setSurfaceDataPoints] = useState<SurfaceDataPoint[]>([]);
-  const [surfaceRange, setSurfaceRange] = useState(6);
-  const [surfaceResolution, setSurfaceResolution] = useState(48);
-  const [surfaceShowSlices, setSurfaceShowSlices] = useState(true);
-  const [surfaceShowContour, setSurfaceShowContour] = useState(true);
-  const [surfacePanelView, setSurfacePanelView] = useState<SurfacePanelView>("contour");
-  const [surfaceCutX, setSurfaceCutX] = useState(0);
-  const [surfaceCutY, setSurfaceCutY] = useState(0);
-  const [surfaceCutZ, setSurfaceCutZ] = useState(0);
-  const [rendererMode, setRendererMode] = useState<RendererMode>("auto");
+  const [surfaceStrokes, setSurfaceStrokes] = useState<SurfaceStroke[]>(
+    initialWorkspace.surface.strokes
+  );
+  const [surfaceDataPoints, setSurfaceDataPoints] = useState<SurfaceDataPoint[]>(
+    initialWorkspace.surface.dataPoints
+  );
+  const [surfaceRange, setSurfaceRange] = useState(initialWorkspace.surface.range);
+  const [surfaceResolution, setSurfaceResolution] = useState(
+    initialWorkspace.surface.resolution
+  );
+  const [surfaceShowSlices, setSurfaceShowSlices] = useState(
+    initialWorkspace.surface.showSlices
+  );
+  const [surfaceShowContour, setSurfaceShowContour] = useState(
+    initialWorkspace.surface.showContour
+  );
+  const [surfacePanelView, setSurfacePanelView] = useState<SurfacePanelView>(
+    initialWorkspace.surface.panelView
+  );
+  const [surfaceCutX, setSurfaceCutX] = useState(initialWorkspace.surface.cutX);
+  const [surfaceCutY, setSurfaceCutY] = useState(initialWorkspace.surface.cutY);
+  const [surfaceCutZ, setSurfaceCutZ] = useState(initialWorkspace.surface.cutZ);
+  const [rendererMode, setRendererMode] = useState<RendererMode>(
+    initialWorkspace.surface.rendererMode
+  );
   const [mouseSensitivity, setMouseSensitivity] = useState(1);
   const [zoomSensitivity, setZoomSensitivity] = useState(1);
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -471,6 +593,40 @@ const App = () => {
     setSurfaceTool("select");
   };
 
+  const getCurrentWorkspaceCapture = (
+    name = pages.find((page) => page.id === activePageId)?.name ?? "Graph page"
+  ): WorkspaceCapture => ({
+    id: `page-state-${Date.now()}`,
+    name,
+    savedAt: new Date().toISOString(),
+    workspaceMode,
+    view,
+    points,
+    lines,
+    curves,
+    shapes,
+    measures,
+    dataPlots,
+    canvasStrokes,
+    canvasTextBoxes,
+    selectedColor,
+    surface: {
+      selectedShapeId: selectedSurfaceShapeId,
+      shapes: surfaceShapes,
+      strokes: surfaceStrokes,
+      dataPoints: surfaceDataPoints,
+      range: surfaceRange,
+      resolution: surfaceResolution,
+      showSlices: surfaceShowSlices,
+      showContour: surfaceShowContour,
+      panelView: surfacePanelView,
+      cutX: surfaceCutX,
+      cutY: surfaceCutY,
+      cutZ: surfaceCutZ,
+      rendererMode,
+    },
+  });
+
   const saveWorkspaceSnapshot = () => {
     localStorage.setItem(
       "graph-workspace:snapshot",
@@ -485,6 +641,7 @@ const App = () => {
         measures,
         dataPlots,
         canvasStrokes,
+        canvasTextBoxes,
         surface: {
           selectedShapeId: selectedSurfaceShapeId,
           shapes: surfaceShapes,
@@ -506,36 +663,9 @@ const App = () => {
 
   const createWorkspaceCapture = (name = captureName) => {
     const id = `${Date.now()}`;
-    const savedAt = new Date().toISOString();
     const nextCapture: WorkspaceCapture = {
+      ...getCurrentWorkspaceCapture(name.trim() || `Capture ${captures.length + 1}`),
       id,
-      name: name.trim() || `Capture ${captures.length + 1}`,
-      savedAt,
-      workspaceMode,
-      view,
-      points,
-      lines,
-      curves,
-      shapes,
-      measures,
-      dataPlots,
-      canvasStrokes,
-      selectedColor,
-      surface: {
-        selectedShapeId: selectedSurfaceShapeId,
-        shapes: surfaceShapes,
-        strokes: surfaceStrokes,
-        dataPoints: surfaceDataPoints,
-        range: surfaceRange,
-        resolution: surfaceResolution,
-        showSlices: surfaceShowSlices,
-        showContour: surfaceShowContour,
-        panelView: surfacePanelView,
-        cutX: surfaceCutX,
-        cutY: surfaceCutY,
-        cutZ: surfaceCutZ,
-        rendererMode,
-      },
     };
 
     setCaptures((current) => {
@@ -546,11 +676,15 @@ const App = () => {
     setSelectedCaptureId(id);
   };
 
-  const restoreWorkspaceCapture = (captureId = selectedCaptureId) => {
-    const capture = captures.find((item) => item.id === captureId);
+  const restoreWorkspaceCapture = (
+    captureId = selectedCaptureId,
+    captureOverride?: WorkspaceCapture,
+    trackHistory = true
+  ) => {
+    const capture = captureOverride ?? captures.find((item) => item.id === captureId);
     if (!capture) return;
 
-    pushHistory();
+    if (trackHistory) pushHistory();
     setWorkspaceMode(capture.workspaceMode);
     setView(capture.view);
     setPoints(capture.points.map(clonePoint));
@@ -590,9 +724,15 @@ const App = () => {
       }))
     );
     setCanvasStrokes(
-      capture.canvasStrokes.map((stroke) => ({
+      (capture.canvasStrokes ?? []).map((stroke) => ({
         ...stroke,
         points: stroke.points.map(clonePoint),
+      }))
+    );
+    setCanvasTextBoxes(
+      (capture.canvasTextBoxes ?? []).map((textBox) => ({
+        ...textBox,
+        position: clonePoint(textBox.position),
       }))
     );
     setSelectedColor(capture.selectedColor);
@@ -641,9 +781,142 @@ const App = () => {
     nextMeasureId.current = getNextId(capture.measures);
     nextDataPlotId.current = getNextId(capture.dataPlots);
     nextCanvasStrokeId.current = getNextId(capture.canvasStrokes);
+    nextCanvasTextBoxId.current = getNextId(capture.canvasTextBoxes ?? []);
     nextSurfaceShapeId.current = getNextId(capture.surface.shapes);
     nextSurfaceStrokeId.current = getNextId(capture.surface.strokes);
     nextSurfaceDataPointId.current = getNextId(capture.surface.dataPoints);
+  };
+
+  const updatePages = (updater: (current: GraphPage[]) => GraphPage[]) => {
+    setPages((current) => {
+      const next = updater(current);
+      writeGraphPages(next);
+      return next;
+    });
+  };
+
+  const saveActiveGraphPage = () => {
+    const pageState = cloneWorkspaceCapture(getCurrentWorkspaceCapture());
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId ? { ...page, state: pageState } : page
+      )
+    );
+  };
+
+  const switchGraphPage = (pageId: string) => {
+    if (pageId === activePageId) return;
+    const nextPage = pages.find((page) => page.id === pageId);
+    if (!nextPage) return;
+    const pageState = cloneWorkspaceCapture(getCurrentWorkspaceCapture());
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId ? { ...page, state: pageState } : page
+      )
+    );
+    setActivePageId(pageId);
+    setSelectedPageSnapshotId("");
+    setComparisonPageId((current) => (current === pageId ? "" : current));
+    undoStack.current = [];
+    redoStack.current = [];
+    setHistoryVersion((current) => current + 1);
+    restoreWorkspaceCapture("", cloneWorkspaceCapture(nextPage.state), false);
+  };
+
+  const addGraphPage = () => {
+    const nextNumber = pages.length + 1;
+    const nextPage = createGraphPage(`Page ${nextNumber}`);
+    const pageState = cloneWorkspaceCapture(getCurrentWorkspaceCapture());
+    updatePages((current) => [
+      ...current.map((page) =>
+        page.id === activePageId ? { ...page, state: pageState } : page
+      ),
+      nextPage,
+    ]);
+    setActivePageId(nextPage.id);
+    setSelectedPageSnapshotId("");
+    undoStack.current = [];
+    redoStack.current = [];
+    setHistoryVersion((current) => current + 1);
+    restoreWorkspaceCapture("", nextPage.state, false);
+  };
+
+  const removeActiveGraphPage = () => {
+    if (pages.length <= 1) return;
+    const remaining = pages.filter((page) => page.id !== activePageId);
+    const nextPage = remaining[0];
+    writeGraphPages(remaining);
+    setPages(remaining);
+    setActivePageId(nextPage.id);
+    setComparisonPageId((current) =>
+      current === activePageId || current === nextPage.id ? "" : current
+    );
+    setSelectedPageSnapshotId("");
+    undoStack.current = [];
+    redoStack.current = [];
+    setHistoryVersion((current) => current + 1);
+    restoreWorkspaceCapture("", cloneWorkspaceCapture(nextPage.state), false);
+  };
+
+  const renameActiveGraphPage = (name: string) => {
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId ? { ...page, name: name || "Untitled page" } : page
+      )
+    );
+  };
+
+  const createPageSnapshot = () => {
+    const activePage = pages.find((page) => page.id === activePageId);
+    if (!activePage) return;
+    const snapshot = cloneWorkspaceCapture(
+      getCurrentWorkspaceCapture(`Snapshot ${activePage.snapshots.length + 1}`)
+    );
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId
+          ? {
+              ...page,
+              state: cloneWorkspaceCapture(snapshot),
+              snapshots: [snapshot, ...page.snapshots].slice(0, 3),
+            }
+          : page
+      )
+    );
+    setSelectedPageSnapshotId(snapshot.id);
+  };
+
+  const restorePageSnapshot = () => {
+    const activePage = pages.find((page) => page.id === activePageId);
+    const snapshot = activePage?.snapshots.find(
+      (item) => item.id === selectedPageSnapshotId
+    );
+    if (!snapshot) return;
+    restoreWorkspaceCapture("", cloneWorkspaceCapture(snapshot));
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId
+          ? { ...page, state: cloneWorkspaceCapture(snapshot) }
+          : page
+      )
+    );
+  };
+
+  const deletePageSnapshot = () => {
+    if (!selectedPageSnapshotId) return;
+    updatePages((current) =>
+      current.map((page) =>
+        page.id === activePageId
+          ? {
+              ...page,
+              snapshots: page.snapshots.filter(
+                (snapshot) => snapshot.id !== selectedPageSnapshotId
+              ),
+            }
+          : page
+      )
+    );
+    setSelectedPageSnapshotId("");
   };
 
   const getGraphSnapshot = (): GraphSnapshot =>
@@ -655,6 +928,7 @@ const App = () => {
       measures,
       dataPlots,
       canvasStrokes,
+      canvasTextBoxes,
     });
 
   const restoreGraphSnapshot = (snapshot: GraphSnapshot) => {
@@ -666,6 +940,8 @@ const App = () => {
     setMeasures(next.measures);
     setDataPlots(next.dataPlots);
     setCanvasStrokes(next.canvasStrokes);
+    setCanvasTextBoxes(next.canvasTextBoxes);
+    setActiveCanvasTextBoxId(null);
     setDraftPoints([]);
     setSelectedObject(null);
   };
@@ -698,12 +974,31 @@ const App = () => {
   const canUndo = historyVersion >= 0 && undoStack.current.length > 0;
   const canRedo = historyVersion >= 0 && redoStack.current.length > 0;
   const zoomPercent = `${((view.pixelsPerUnit - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)) * 100}%`;
-  const fitDataPoints = collectLeastSquaresPoints(points, dataPlots);
+  const fitDataPoints = useMemo(
+    () => collectLeastSquaresPoints(points, dataPlots),
+    [dataPlots, points]
+  );
   const activeFitLine =
     selectedObject?.kind === "line"
       ? lines.find((line) => line.id === selectedObject.id) ?? null
       : lines[0] ?? null;
-  const leastSquaresSummary = getLeastSquaresSummary(activeFitLine, fitDataPoints);
+  const leastSquaresSummary = useMemo(
+    () => getLeastSquaresSummary(activeFitLine, fitDataPoints),
+    [activeFitLine, fitDataPoints]
+  );
+  const referenceSquareSource =
+    selectedObject?.kind === "line"
+      ? lines.find((line) => line.id === selectedObject.id && line.reference) ?? null
+      : [...lines].reverse().find((line) => line.reference) ?? null;
+  const selectedReferenceSquare =
+    selectedObject?.kind === "shape"
+      ? shapes.find(
+          (shape) =>
+            shape.id === selectedObject.id &&
+            shape.type === "square" &&
+            shape.referenceLineId !== undefined
+        ) ?? null
+      : null;
 
   const screenToWorld = (screenX: number, screenY: number, currentView = view) => {
     const canvas = canvasRef.current;
@@ -905,6 +1200,78 @@ const App = () => {
     ]);
   };
 
+  const getReferenceSquare = (
+    referenceLine: GraphLine,
+    side: 1 | -1,
+    id: number
+  ): GraphShape | null => {
+    const { a, b } = referenceLine;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 0.000001) return null;
+    const center = {
+      x: (a.x + b.x) / 2 - side * (dy / length) * (length / 2),
+      y: (a.y + b.y) / 2 + side * (dx / length) * (length / 2),
+    };
+    return {
+      id,
+      type: "square",
+      a: {
+        id: 0,
+        x: roundCoordinate(center.x - length / 2),
+        y: roundCoordinate(center.y - length / 2),
+      },
+      b: {
+        id: 0,
+        x: roundCoordinate(center.x + length / 2),
+        y: roundCoordinate(center.y + length / 2),
+      },
+      color: referenceLine.color,
+      showLabel: true,
+      rotation: Math.atan2(dy, dx),
+      referenceLineId: referenceLine.id,
+      referenceSide: side,
+    };
+  };
+
+  const addSquareFromReferenceLine = () => {
+    if (!referenceSquareSource) return;
+    const id = nextShapeId.current++;
+    const shape = getReferenceSquare(referenceSquareSource, referenceSquareSide, id);
+    if (!shape) return;
+    pushHistory();
+    setShapes((current) => [...current, shape]);
+    setSelectedObject({ kind: "shape", id });
+  };
+
+  const flipSelectedReferenceSquare = () => {
+    if (!selectedReferenceSquare) return;
+    const referenceLine = lines.find(
+      (line) => line.id === selectedReferenceSquare.referenceLineId && line.reference
+    );
+    if (!referenceLine) return;
+    const nextSide = selectedReferenceSquare.referenceSide === -1 ? 1 : -1;
+    const flipped = getReferenceSquare(referenceLine, nextSide, selectedReferenceSquare.id);
+    if (!flipped) return;
+    pushHistory();
+    setShapes((current) =>
+      current.map((shape) =>
+        shape.id === selectedReferenceSquare.id
+          ? {
+              ...flipped,
+              color: shape.color,
+              showLabel: shape.showLabel,
+              label: shape.label,
+              areaLabelTx: shape.areaLabelTx,
+              areaLabelTy: shape.areaLabelTy,
+            }
+          : shape
+      )
+    );
+    setReferenceSquareSide(nextSide);
+  };
+
   const addDraftGeometryPoint = (screenX: number, screenY: number) => {
     const point =
       tool === "measure"
@@ -1006,8 +1373,10 @@ const App = () => {
       testPoint(curve.c, { kind: "curve", id: curve.id, handle: "c" });
     });
     shapes.forEach((shape) => {
-      testPoint(shape.a, { kind: "shape", id: shape.id, handle: "a" });
-      testPoint(shape.b, { kind: "shape", id: shape.id, handle: "b" });
+      const corners = getShapeCorners(shape);
+      SHAPE_VERTICES.forEach((handle) => {
+        testPoint(corners[handle], { kind: "shape", id: shape.id, handle });
+      });
     });
 
     return nearestTarget;
@@ -1095,33 +1464,12 @@ const App = () => {
     });
 
     shapes.forEach((shape) => {
-      const topLeft = worldToCanvas({
-        id: 0,
-        x: Math.min(shape.a.x, shape.b.x),
-        y: Math.max(shape.a.y, shape.b.y),
-      });
-      const bottomRight = worldToCanvas({
-        id: 0,
-        x: Math.max(shape.a.x, shape.b.x),
-        y: Math.min(shape.a.y, shape.b.y),
-      });
-      const isInside =
-        local.x >= topLeft.x &&
-        local.x <= bottomRight.x &&
-        local.y >= topLeft.y &&
-        local.y <= bottomRight.y;
-
-      if (isInside) {
+      const corners = getShapeCornerList(shape).map(worldToCanvas);
+      if (isPointInsidePolygon(local, corners)) {
         choose(0, { kind: "shape", id: shape.id });
         return;
       }
 
-      const corners = [
-        topLeft,
-        { x: bottomRight.x, y: topLeft.y },
-        bottomRight,
-        { x: topLeft.x, y: bottomRight.y },
-      ];
       corners.forEach((corner, index) => {
         choose(distanceToSegment(local, corner, corners[(index + 1) % corners.length]), {
           kind: "shape",
@@ -1197,18 +1545,13 @@ const App = () => {
     });
 
     shapes.forEach((shape) => {
-      const bounds = getShapeBounds(shape);
-      const left = bounds.x;
-      const right = bounds.x + bounds.width;
-      const bottom = bounds.y;
-      const top = bounds.y + bounds.height;
-      const candidates = [
-        { id: 0, x: clamp(world.x, left, right), y: top },
-        { id: 0, x: clamp(world.x, left, right), y: bottom },
-        { id: 0, x: left, y: clamp(world.y, bottom, top) },
-        { id: 0, x: right, y: clamp(world.y, bottom, top) },
-      ];
-      candidates.forEach((point) => choose(point, { kind: "shape", id: shape.id }));
+      const corners = getShapeCornerList(shape);
+      corners.forEach((corner, index) => {
+        choose(
+          closestPointOnSegmentWorld(world, corner, corners[(index + 1) % corners.length]),
+          { kind: "shape", id: shape.id }
+        );
+      });
     });
 
     return nearest;
@@ -1281,15 +1624,7 @@ const App = () => {
       setShapes((current) =>
         current.map((shape) => {
           if (shape.id !== target.id) return shape;
-          const opposite = target.handle === "a" ? shape.b : shape.a;
-          const nextCorner =
-            shape.type === "square"
-              ? normalizeShapeEnd(opposite, nextPoint, "square")
-              : nextPoint;
-          return {
-            ...shape,
-            [target.handle]: nextCorner,
-          };
+          return resizeAndRotateShapeFromVertex(shape, target.handle, nextPoint);
         })
       );
     }
@@ -1518,6 +1853,36 @@ const App = () => {
     );
   };
 
+  const moveShapeAreaLabel = (
+    shapeId: number,
+    clientX: number,
+    clientY: number
+  ) => {
+    const canvas = canvasRef.current;
+    const shape = shapes.find((item) => item.id === shapeId);
+    if (!canvas || !shape) return;
+    const bounds = getShapeBounds(shape);
+    if (bounds.width <= 0.000001 || bounds.height <= 0.000001) return;
+    const local = rotatePointAround(
+      { id: 0, ...screenToWorld(clientX, clientY) },
+      getShapeCenter(shape),
+      -(shape.rotation ?? 0)
+    );
+    setShapes((current) =>
+      current.map((item) =>
+        item.id === shapeId
+          ? {
+              ...item,
+              areaLabelTx: roundCoordinate(clamp((local.x - bounds.x) / bounds.width, 0.08, 0.92)),
+              areaLabelTy: roundCoordinate(
+                clamp(1 - (local.y - bounds.y) / bounds.height, 0.08, 0.92)
+              ),
+            }
+          : item
+      )
+    );
+  };
+
   const updateObjectLabel = (target: ObjectTarget, label: string) => {
     pushHistory();
     if (target.kind === "line") {
@@ -1654,19 +2019,23 @@ const App = () => {
       current.map((shape) => {
         if (shape.id !== shapeId) return shape;
         const bounds = getShapeBounds(shape);
-        const signX = Math.sign(shape.b.x - shape.a.x) || 1;
-        const signY = Math.sign(shape.b.y - shape.a.y) || -1;
         const width = Math.max(0.1, next.side ?? next.width ?? bounds.width);
         const height = Math.max(
           0.1,
           shape.type === "square" ? width : next.height ?? bounds.height
         );
+        const center = getShapeCenter(shape);
         return {
           ...shape,
+          a: {
+            ...shape.a,
+            x: roundCoordinate(center.x - width / 2),
+            y: roundCoordinate(center.y - height / 2),
+          },
           b: {
             ...shape.b,
-            x: roundCoordinate(shape.a.x + signX * width),
-            y: roundCoordinate(shape.a.y + signY * height),
+            x: roundCoordinate(center.x + width / 2),
+            y: roundCoordinate(center.y + height / 2),
           },
         };
       })
@@ -1992,6 +2361,54 @@ const App = () => {
     );
   };
 
+  const addCanvasTextBox = (position: GraphPoint) => {
+    const id = nextCanvasTextBoxId.current++;
+    setCanvasTextBoxes((current) => [
+      ...current,
+      {
+        id,
+        color: selectedColor,
+        position,
+        text: "",
+      },
+    ]);
+    setActiveCanvasTextBoxId(id);
+  };
+
+  const moveCanvasTextBox = (
+    textBoxId: number,
+    clientX: number,
+    clientY: number,
+    grabOffset: { x: number; y: number }
+  ) => {
+    const nextPosition = screenToWorld(
+      clientX - grabOffset.x,
+      clientY - grabOffset.y
+    );
+    setCanvasTextBoxes((current) =>
+      current.map((textBox) =>
+        textBox.id === textBoxId
+          ? {
+              ...textBox,
+              position: {
+                id: 0,
+                x: roundCoordinate(nextPosition.x),
+                y: roundCoordinate(nextPosition.y),
+              },
+            }
+          : textBox
+      )
+    );
+  };
+
+  const removeCanvasTextBox = (textBoxId: number) => {
+    pushHistory();
+    setCanvasTextBoxes((current) =>
+      current.filter((textBox) => textBox.id !== textBoxId)
+    );
+    setActiveCanvasTextBoxId((current) => (current === textBoxId ? null : current));
+  };
+
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     stopPanInertia();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2018,6 +2435,12 @@ const App = () => {
           startWorld: startPoint,
           historyPushed: true,
         };
+        updateCursor(event.clientX, event.clientY);
+        return;
+      }
+
+      if (canvasTool === "text") {
+        addCanvasTextBox(startPoint);
         updateCursor(event.clientX, event.clientY);
         return;
       }
@@ -2388,7 +2811,7 @@ const App = () => {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canvasStrokes, curves, lines, measures, points, selectedObject, shapes]);
+  }, [canvasStrokes, canvasTextBoxes, curves, lines, measures, points, selectedObject, shapes]);
 
   useEffect(() => {
     if (!isResizingSidebar) return;
@@ -2422,7 +2845,11 @@ const App = () => {
     const resizeCanvas = () => {
       const rect = wrapper.getBoundingClientRect();
       const dpr = getCanvasDpr();
-      setCanvasSize({ width: rect.width, height: rect.height });
+      setCanvasSize((current) =>
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height }
+      );
       canvas.width = Math.round(rect.width * dpr);
       canvas.height = Math.round(rect.height * dpr);
       canvas.style.width = `${rect.width}px`;
@@ -2515,6 +2942,15 @@ const App = () => {
       y: a.y + (b.y - a.y) * t,
     });
   };
+  const getShapeAreaLabelStyle = (shape: GraphShape) => {
+    const point = getCanvasPoint(
+      getShapeLocalPoint(shape, shape.areaLabelTx ?? 0.5, shape.areaLabelTy ?? 0.5)
+    );
+    return {
+      left: point.x,
+      top: point.y,
+    };
+  };
   const isOverlayActive = (target: ObjectTarget) =>
     isSelectedObject(selectedObject, target.kind, target.id);
   const shouldShowOverlay = (
@@ -2583,6 +3019,14 @@ const App = () => {
   };
   const selectedCapture =
     captures.find((capture) => capture.id === selectedCaptureId) ?? null;
+  const activeGraphPage = pages.find((page) => page.id === activePageId) ?? pages[0];
+  const comparisonPage =
+    pages.find((page) => page.id === comparisonPageId && page.id !== activePageId) ??
+    null;
+  const selectedPageSnapshot =
+    activeGraphPage.snapshots.find(
+      (snapshot) => snapshot.id === selectedPageSnapshotId
+    ) ?? null;
 
   return (
     <main
@@ -2597,6 +3041,24 @@ const App = () => {
         <details className="app-menu-item">
           <summary>File</summary>
           <div className="app-menu-dropdown">
+            <label className="field compact-field">
+              <span>Active page name</span>
+              <input
+                onChange={(event) => renameActiveGraphPage(event.target.value)}
+                type="text"
+                value={activeGraphPage.name}
+              />
+            </label>
+            <button type="button" onClick={saveActiveGraphPage}>
+              Save active page
+            </button>
+            <button
+              disabled={pages.length <= 1}
+              onClick={removeActiveGraphPage}
+              type="button"
+            >
+              Delete active page
+            </button>
             <button type="button" onClick={saveWorkspaceSnapshot}>
               Save workspace
             </button>
@@ -2693,7 +3155,7 @@ const App = () => {
           </div>
         </details>
 
-        <button className="app-menu-button" type="button" onClick={saveWorkspaceSnapshot}>
+        <button className="app-menu-button" type="button" onClick={saveActiveGraphPage}>
           Save
         </button>
         <button className="app-menu-button" type="button" onClick={() => window.close()}>
@@ -2778,6 +3240,33 @@ const App = () => {
                             />
                             <span>Least-squares squares</span>
                           </label>
+                          <button
+                            disabled={!referenceSquareSource}
+                            onClick={addSquareFromReferenceLine}
+                            type="button"
+                          >
+                            Create from reference line
+                          </button>
+                          <label className="toggle">
+                            <input
+                              checked={referenceSquareSide === -1}
+                              onChange={(event) =>
+                                setReferenceSquareSide(event.target.checked ? -1 : 1)
+                              }
+                              type="checkbox"
+                            />
+                            <span>Create on opposite side</span>
+                          </label>
+                          <button
+                            disabled={!selectedReferenceSquare}
+                            onClick={flipSelectedReferenceSquare}
+                            type="button"
+                          >
+                            Flip selected square
+                          </button>
+                          <span>
+                            Uses the selected dotted guide, or the newest dotted guide, as one side.
+                          </span>
                           {showLeastSquares && leastSquaresSummary ? (
                             <>
                               <code>
@@ -3934,7 +4423,68 @@ const App = () => {
         </button>
       </div>
 
-      <section className="workspace">
+      <section className={comparisonPage ? "workspace split-pages" : "workspace"}>
+        <div className="page-strip">
+          <div className="page-tabs" role="tablist" aria-label="Graph pages">
+            {pages.map((page) => (
+              <button
+                aria-selected={page.id === activePageId}
+                className={page.id === activePageId ? "active" : ""}
+                key={page.id}
+                onClick={() => switchGraphPage(page.id)}
+                role="tab"
+                type="button"
+              >
+                {page.name}
+              </button>
+            ))}
+            <button className="page-add-button" onClick={addGraphPage} type="button">
+              +
+            </button>
+          </div>
+          <div className="page-strip-actions">
+            <label>
+              <span>Side by side</span>
+              <select
+                onChange={(event) => {
+                  saveActiveGraphPage();
+                  setComparisonPageId(event.target.value);
+                }}
+                value={comparisonPageId}
+              >
+                <option value="">Off</option>
+                {pages
+                  .filter((page) => page.id !== activePageId)
+                  .map((page) => (
+                    <option key={page.id} value={page.id}>
+                      {page.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <button onClick={createPageSnapshot} type="button">
+              Snapshot {activeGraphPage.snapshots.length}/3
+            </button>
+            <select
+              aria-label="Page snapshots"
+              onChange={(event) => setSelectedPageSnapshotId(event.target.value)}
+              value={selectedPageSnapshotId}
+            >
+              <option value="">Previous snapshots</option>
+              {activeGraphPage.snapshots.map((snapshot) => (
+                <option key={snapshot.id} value={snapshot.id}>
+                  {new Date(snapshot.savedAt).toLocaleTimeString()}
+                </option>
+              ))}
+            </select>
+            <button disabled={!selectedPageSnapshot} onClick={restorePageSnapshot} type="button">
+              Revert
+            </button>
+            <button disabled={!selectedPageSnapshot} onClick={deletePageSnapshot} type="button">
+              x
+            </button>
+          </div>
+        </div>
         <div className="topbar">
           <div className="topbar-main">
             <div>
@@ -4053,6 +4603,32 @@ const App = () => {
                 selectedColor={selectedColor}
                 tool={canvasTool}
               />
+              {canvasTextBoxes.map((textBox) => (
+                <CanvasTextBoxAnnotation
+                  active={activeCanvasTextBoxId === textBox.id}
+                  color={textBox.color}
+                  key={`canvas-text-box-${textBox.id}`}
+                  onActivate={() => setActiveCanvasTextBoxId(textBox.id)}
+                  onBeginDrag={() => {
+                    pushHistory();
+                    setActiveCanvasTextBoxId(textBox.id);
+                  }}
+                  onBeginEdit={() => pushHistory()}
+                  onChange={(text) =>
+                    setCanvasTextBoxes((current) =>
+                      current.map((item) =>
+                        item.id === textBox.id ? { ...item, text } : item
+                      )
+                    )
+                  }
+                  onDelete={() => removeCanvasTextBox(textBox.id)}
+                  onDrag={(clientX, clientY, grabOffset) =>
+                    moveCanvasTextBox(textBox.id, clientX, clientY, grabOffset)
+                  }
+                  style={getCanvasPoint(textBox.position)}
+                  text={textBox.text}
+                />
+              ))}
               {points.map((point, index) =>
                 point.showLabel === false ? null : (
                   <PointGraphLabel
@@ -4132,7 +4708,6 @@ const App = () => {
               {shapes.map((shape) => {
                 const target: ObjectTarget = { kind: "shape", id: shape.id };
                 if (!shouldShowOverlay(target, shape.showLabel)) return null;
-                const bounds = getShapeBounds(shape);
                 const active = isOverlayActive(target);
                 return (
                   <InlineGraphLabel
@@ -4145,11 +4720,7 @@ const App = () => {
                     onShow={() => updateLabelVisibility(target, true)}
                     showLabel={shape.showLabel}
                     style={getLabelStyle(
-                      getCanvasPoint({
-                        id: 0,
-                        x: bounds.x + bounds.width / 2,
-                        y: bounds.y + bounds.height,
-                      })
+                      getCanvasPoint(getShapeLocalPoint(shape, 0.5, 0))
                     )}
                   >
                     <LabelEditor
@@ -4162,6 +4733,24 @@ const App = () => {
                       onChange={(next) => updateShapeSize(shape.id, next)}
                     />
                   </InlineGraphLabel>
+                );
+              })}
+              {shapes.map((shape) => {
+                const bounds = getShapeBounds(shape);
+                return (
+                  <ShapeAreaLabel
+                    color={shape.color}
+                    key={`shape-area-label-${shape.id}`}
+                    label={`A = ${formatNumber(bounds.width * bounds.height)}`}
+                    onBeginDrag={() => {
+                      pushHistory();
+                      setSelectedObject({ kind: "shape", id: shape.id });
+                    }}
+                    onDrag={(clientX, clientY) =>
+                      moveShapeAreaLabel(shape.id, clientX, clientY)
+                    }
+                    style={getShapeAreaLabelStyle(shape)}
+                  />
                 );
               })}
               {measures.map((measure) => {
@@ -4196,12 +4785,88 @@ const App = () => {
             </>
           )}
         </div>
+        {comparisonPage ? (
+          <GraphPagePreview
+            onEdit={() => switchGraphPage(comparisonPage.id)}
+            page={comparisonPage}
+          />
+        ) : null}
       </section>
       <ScientificCalculator
         context={calculatorContext}
         onGuideChange={setCalculatorGuide}
       />
     </main>
+  );
+};
+
+const GraphPagePreview = ({
+  onEdit,
+  page,
+}: {
+  onEdit: () => void;
+  page: GraphPage;
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const state = page.state;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || state.workspaceMode !== "2d") return;
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = getCanvasDpr();
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      drawGraph(canvas, state.view, {
+        points: state.points,
+        lines: state.lines,
+        curves: state.curves,
+        shapes: state.shapes,
+        measures: state.measures,
+        dataPlots: state.dataPlots,
+        canvasStrokes: state.canvasStrokes ?? [],
+        hoverSnapPoint: null,
+        calculatorGuide: null,
+        draftPoints: [],
+        cursor: null,
+        connectPoints: false,
+        selectedColor: state.selectedColor,
+        tool: "pan",
+        selectedObject: null,
+        showLeastSquares: false,
+        leastSquares: null,
+      });
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [state]);
+
+  return (
+    <aside className="page-preview-pane" aria-label={`${page.name} preview`}>
+      <header>
+        <div>
+          <strong>{page.name}</strong>
+          <span>{page.snapshots.length}/3 snapshots</span>
+        </div>
+        <button onClick={onEdit} type="button">
+          Edit page
+        </button>
+      </header>
+      {state.workspaceMode === "2d" ? (
+        <canvas aria-label={`${page.name} graph preview`} ref={canvasRef} />
+      ) : (
+        <div className="page-preview-surface">
+          <strong>3D surface page</strong>
+          <span>{state.surface.shapes.length} surface object(s)</span>
+          <button onClick={onEdit} type="button">
+            Open 3D page
+          </button>
+        </div>
+      )}
+    </aside>
   );
 };
 
@@ -4436,6 +5101,50 @@ const PointGraphLabel = ({
   );
 };
 
+const ShapeAreaLabel = ({
+  color,
+  label,
+  onBeginDrag,
+  onDrag,
+  style,
+}: {
+  color: string;
+  label: string;
+  onBeginDrag: () => void;
+  onDrag: (clientX: number, clientY: number) => void;
+  style: { left: number; top: number };
+}) => {
+  const dragRef = useRef<number | null>(null);
+
+  return (
+    <div
+      className="shape-area-label"
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = event.pointerId;
+        onBeginDrag();
+      }}
+      onPointerMove={(event) => {
+        if (dragRef.current !== event.pointerId) return;
+        onDrag(event.clientX, event.clientY);
+      }}
+      onPointerUp={(event) => {
+        if (dragRef.current !== event.pointerId) return;
+        dragRef.current = null;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      style={{
+        ...style,
+        borderColor: color,
+        color,
+      }}
+    >
+      {label}
+    </div>
+  );
+};
+
 const LabelEditor = ({
   fallback,
   label,
@@ -4455,6 +5164,108 @@ const LabelEditor = ({
     />
   </label>
 );
+
+const CanvasTextBoxAnnotation = ({
+  active,
+  color,
+  onActivate,
+  onBeginDrag,
+  onBeginEdit,
+  onChange,
+  onDelete,
+  onDrag,
+  style,
+  text,
+}: {
+  active: boolean;
+  color: string;
+  onActivate: () => void;
+  onBeginDrag: () => void;
+  onBeginEdit: () => void;
+  onChange: (text: string) => void;
+  onDelete: () => void;
+  onDrag: (clientX: number, clientY: number, grabOffset: { x: number; y: number }) => void;
+  style: { x: number; y: number };
+  text: string;
+}) => {
+  const dragRef = useRef<{
+    pointerId: number;
+    grabOffset: { x: number; y: number };
+  } | null>(null);
+  const editingRef = useRef(false);
+
+  return (
+    <div
+      className={active ? "canvas-text-box active" : "canvas-text-box"}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onActivate();
+      }}
+      style={{ left: style.x, top: style.y, borderColor: color }}
+    >
+      <div
+        className="canvas-text-box-title"
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          const box = event.currentTarget.parentElement?.getBoundingClientRect();
+          if (!box) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = {
+            pointerId: event.pointerId,
+            grabOffset: {
+              x: event.clientX - box.left,
+              y: event.clientY - box.top,
+            },
+          };
+          onBeginDrag();
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          onDrag(event.clientX, event.clientY, drag.grabOffset);
+        }}
+        onPointerUp={(event) => {
+          const drag = dragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          dragRef.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+      >
+        <span>::</span>
+      </div>
+      <input
+        aria-label="Canvas text label"
+        autoFocus={active && text.length === 0}
+        onBlur={() => {
+          editingRef.current = false;
+        }}
+        onChange={(event) => onChange(event.target.value)}
+        onFocus={() => {
+          onActivate();
+          if (editingRef.current) return;
+          editingRef.current = true;
+          onBeginEdit();
+        }}
+        placeholder="Label"
+        size={Math.max(5, Math.min(24, text.length || 5))}
+        type="text"
+        value={text}
+      />
+      <button
+        aria-label="Delete text label"
+        className="canvas-text-box-delete"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+        type="button"
+      >
+        x
+      </button>
+    </div>
+  );
+};
 
 const CanvasToolPalette = ({
   canvasSize,
@@ -4484,7 +5295,7 @@ const CanvasToolPalette = ({
     const dy = event.clientY - drag.startY;
     if (Math.hypot(dx, dy) > 3) drag.moved = true;
     const toolbarWidth = collapsed ? 52 : 214;
-    const toolbarHeight = collapsed ? 52 : 128;
+    const toolbarHeight = collapsed ? 52 : 164;
     onPositionChange({
       x: clamp(drag.startLeft + dx, 8, Math.max(8, canvasSize.width - toolbarWidth - 8)),
       y: clamp(drag.startTop + dy, 8, Math.max(8, canvasSize.height - toolbarHeight - 8)),
@@ -4531,6 +5342,7 @@ const CanvasToolPalette = ({
           aria-label="Open canvas tools"
           className="canvas-tool-orb"
           data-canvas-toolbar-drag
+          onClick={() => onCollapsedChange(false)}
           type="button"
         >
           P
@@ -4553,6 +5365,7 @@ const CanvasToolPalette = ({
               ["pencil", "Pencil"],
               ["marker", "Thin marker"],
               ["eraser", "Eraser"],
+              ["text", "Text box"],
               ["none", "Off"],
             ] as Array<[CanvasTool, string]>).map(([value, label]) => (
               <button
@@ -4852,7 +5665,7 @@ const drawGraph = (
     if (isSelected) {
       drawShapeSelection(context, shape, toScreen);
     }
-    [shape.a, shape.b].forEach((point, handleIndex) => {
+    getShapeCornerList(shape).forEach((point, handleIndex) => {
       drawHandle(context, toScreen(point), shape.color);
       context.fillStyle = "#24211e";
       context.fillText(`S${index + 1}.${handleIndex + 1}`, toScreen(point).x + 9, toScreen(point).y - 18);
@@ -5294,30 +6107,99 @@ const drawCalculatorGuide = (
   context.restore();
 };
 
+const OPPOSITE_SHAPE_VERTEX: Record<ShapeVertex, ShapeVertex> = {
+  nw: "se",
+  ne: "sw",
+  se: "nw",
+  sw: "ne",
+};
+
+const SHAPE_VERTEX_SIGNS: Record<ShapeVertex, { x: number; y: number }> = {
+  nw: { x: -1, y: 1 },
+  ne: { x: 1, y: 1 },
+  se: { x: 1, y: -1 },
+  sw: { x: -1, y: -1 },
+};
+
+const getShapeCornerList = (shape: GraphShape) => {
+  const corners = getShapeCorners(shape);
+  return SHAPE_VERTICES.map((vertex) => corners[vertex]);
+};
+
+const isPointInsidePolygon = (
+  point: { x: number; y: number },
+  polygon: { x: number; y: number }[]
+) => {
+  let isInside = false;
+  for (let current = 0, previous = polygon.length - 1; current < polygon.length; previous = current++) {
+    const a = polygon[current];
+    const b = polygon[previous];
+    const crosses =
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
+    if (crosses) isInside = !isInside;
+  }
+  return isInside;
+};
+
+const resizeAndRotateShapeFromVertex = (
+  shape: GraphShape,
+  vertex: ShapeVertex,
+  nextPoint: GraphPoint
+): GraphShape => {
+  const bounds = getShapeBounds(shape);
+  const opposite = getShapeCorners(shape)[OPPOSITE_SHAPE_VERTEX[vertex]];
+  const signs = SHAPE_VERTEX_SIGNS[vertex];
+  const localDiagonal = {
+    x: signs.x * bounds.width,
+    y: signs.y * bounds.height,
+  };
+  const worldDiagonal = {
+    x: nextPoint.x - opposite.x,
+    y: nextPoint.y - opposite.y,
+  };
+  const originalLength = Math.hypot(localDiagonal.x, localDiagonal.y);
+  const nextLength = Math.hypot(worldDiagonal.x, worldDiagonal.y);
+  if (originalLength < 0.000001 || nextLength < 0.1) return shape;
+  const scale = nextLength / originalLength;
+  const width = Math.max(0.1, bounds.width * scale);
+  const height = Math.max(0.1, bounds.height * scale);
+  const center = {
+    x: (opposite.x + nextPoint.x) / 2,
+    y: (opposite.y + nextPoint.y) / 2,
+  };
+  return {
+    ...shape,
+    a: {
+      ...shape.a,
+      x: roundCoordinate(center.x - width / 2),
+      y: roundCoordinate(center.y - height / 2),
+    },
+    b: {
+      ...shape.b,
+      x: roundCoordinate(center.x + width / 2),
+      y: roundCoordinate(center.y + height / 2),
+    },
+    rotation:
+      Math.atan2(worldDiagonal.y, worldDiagonal.x) -
+      Math.atan2(localDiagonal.y, localDiagonal.x),
+  };
+};
+
 const drawShape = (
   context: CanvasRenderingContext2D,
   shape: GraphShape,
   toScreen: (point: GraphPoint) => { x: number; y: number },
   color: string
 ) => {
-  const topLeft = toScreen({
-    id: 0,
-    x: Math.min(shape.a.x, shape.b.x),
-    y: Math.max(shape.a.y, shape.b.y),
-  });
-  const bottomRight = toScreen({
-    id: 0,
-    x: Math.max(shape.a.x, shape.b.x),
-    y: Math.min(shape.a.y, shape.b.y),
-  });
-  const width = bottomRight.x - topLeft.x;
-  const height = bottomRight.y - topLeft.y;
-
+  const corners = getShapeCornerList(shape).map(toScreen);
   context.beginPath();
   context.fillStyle = withAlpha(color, 0.12);
   context.strokeStyle = color;
   context.lineWidth = 2.5;
-  context.rect(topLeft.x, topLeft.y, width, height);
+  context.moveTo(corners[0].x, corners[0].y);
+  corners.slice(1).forEach((corner) => context.lineTo(corner.x, corner.y));
+  context.closePath();
   context.fill();
   context.stroke();
 };
@@ -5327,27 +6209,16 @@ const drawShapeSelection = (
   shape: GraphShape,
   toScreen: (point: GraphPoint) => { x: number; y: number }
 ) => {
-  const topLeft = toScreen({
-    id: 0,
-    x: Math.min(shape.a.x, shape.b.x),
-    y: Math.max(shape.a.y, shape.b.y),
-  });
-  const bottomRight = toScreen({
-    id: 0,
-    x: Math.max(shape.a.x, shape.b.x),
-    y: Math.min(shape.a.y, shape.b.y),
-  });
-
+  const corners = getShapeCornerList(shape).map(toScreen);
   context.save();
   context.setLineDash([7, 5]);
   context.strokeStyle = "rgba(36, 33, 30, 0.45)";
   context.lineWidth = 2;
-  context.strokeRect(
-    topLeft.x - 5,
-    topLeft.y - 5,
-    bottomRight.x - topLeft.x + 10,
-    bottomRight.y - topLeft.y + 10
-  );
+  context.beginPath();
+  context.moveTo(corners[0].x, corners[0].y);
+  corners.slice(1).forEach((corner) => context.lineTo(corner.x, corner.y));
+  context.closePath();
+  context.stroke();
   context.restore();
 };
 
