@@ -60,7 +60,7 @@ npm run build
 
 ## Repository Workflow
 
-Feature work is developed on `codex/3d-surface-grid-tools` and then merged into `main` through GitHub pull requests.
+Feature work is developed on short-lived branches and then merged into `main` through GitHub pull requests.
 
 Before pushing code, run:
 

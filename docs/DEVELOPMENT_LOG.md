@@ -34,6 +34,15 @@ This log records major product and engineering changes. Keep it updated whenever
 - Added square construction from dotted reference lines. The selected reference line, or newest available guide, becomes one exact side of the generated square.
 - Added side selection and flipping for reference-line squares, so construction squares can sit on either side of their dotted guide.
 - Added multi-page graph workspaces with page tabs, a side-by-side comparison preview, and up to three restorable snapshots per page.
+- Added a neon mean-point visualization and an interactive correlation-coefficient formula. Calculator term selection now highlights the mean, deviations, signed comovement rectangles, and denominator spread components directly on the grid.
+- Added locked multi-object groups in Pan mode so points, dataset points, lines, curves, shapes, and distances can be collected and moved together. The mean visualization now shows both horizontal and vertical centroid guides.
+- Made the floating calculator smaller and resizable. SD, variance, covariance, and median now render statistic-specific visual guides directly on the grid.
+- Expanded calculator ergonomics: the panel can be dragged from non-interactive surfaces, resized from every edge or corner, and moves its expression input above the panel when compact.
+- Refined the compact calculator threshold: the expression input detaches only during width reduction, keeps its readable width, and the calculator body can continue narrowing afterward.
+- Delayed calculator input detachment until the attached expression box has narrowed to its practical minimum, so the box resizes inside the panel before it pops above the compact calculator.
+- Preserved cyan horizontal deviations and pink vertical deviations while highlighting correlation comovement rectangles, keeping each component visually distinguishable.
+- Added positive-only and negative-only comovement selections with distinct green and orange rectangle colors plus a calculator legend.
+- Added a correlation formula registry and component tree. Correlation layers can now be toggled together, x̄ and ȳ have separate controls, horizontal and vertical spread render literal labeled squares with totals, and signed comovement rectangles include numeric labels and total raw comovement.
 
 ## Earlier Milestones
 

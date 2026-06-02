@@ -144,6 +144,37 @@ export const calculateStatistic = (
   return roundCalc(Math.sqrt(variance(values)));
 };
 
+export const getMeanPoint = (context: CalculatorDataContext) => {
+  const pairs = getCalculatorPairs(context);
+  if (pairs.length === 0) throw new Error("MEAN needs points or data.");
+  return {
+    x: roundCalc(mean(pairs.map((pair) => pair.x))),
+    y: roundCalc(mean(pairs.map((pair) => pair.y))),
+    count: pairs.length,
+  };
+};
+
+export const getCorrelationSummary = (context: CalculatorDataContext) => {
+  const pairs = getCalculatorPairs(context);
+  if (pairs.length < 2) throw new Error("Correlation needs at least two x,y pairs.");
+  const meanX = mean(pairs.map((pair) => pair.x));
+  const meanY = mean(pairs.map((pair) => pair.y));
+  const rawComovement = pairs.reduce(
+    (sum, pair) => sum + (pair.x - meanX) * (pair.y - meanY),
+    0
+  );
+  const xSpread = pairs.reduce((sum, pair) => sum + (pair.x - meanX) ** 2, 0);
+  const ySpread = pairs.reduce((sum, pair) => sum + (pair.y - meanY) ** 2, 0);
+  const denominator = Math.sqrt(xSpread * ySpread);
+  return {
+    rawComovement: roundCalc(rawComovement),
+    xSpread: roundCalc(xSpread),
+    ySpread: roundCalc(ySpread),
+    denominator: roundCalc(denominator),
+    coefficient: denominator === 0 ? null : roundCalc(rawComovement / denominator),
+  };
+};
+
 export const getSelectedObjectSummary = (context: CalculatorDataContext) => {
   if (!context.selected || !context.selectedTarget) {
     return "No object selected";

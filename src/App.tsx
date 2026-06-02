@@ -14,6 +14,11 @@ import {
 } from "react";
 import { ScientificCalculator } from "./features/calculator/ScientificCalculator";
 import {
+  buildCorrelationGeometry,
+  getCorrelationFormulaComponent,
+  type CorrelationGeometryItem,
+} from "./features/formulaVisualization/correlationFormula";
+import {
   COLOR_SWATCHES,
   DEFAULT_SIDEBAR_WIDTH,
   DRAW_LINE_THRESHOLD_PX,
@@ -33,6 +38,9 @@ import {
 } from "./config/graphConfig";
 import type {
   CalculatorGuide,
+  CalculatorMeanPoint,
+  CorrelationGuide,
+  CorrelationHighlight,
   DataPlot,
   DataPointStyle,
   DataPlotStyle,
@@ -149,6 +157,11 @@ type HandleTarget =
   | { kind: "measure"; id: number; handle: "a" | "b" }
   | { kind: "data"; id: number; pointIndex: number };
 
+type GroupTarget =
+  | ObjectTarget
+  | { kind: "point"; id: number }
+  | { kind: "data"; id: number; pointIndex: number };
+
 type HoverMenu = {
   target: ObjectTarget;
   x: number;
@@ -227,6 +240,7 @@ type DragState = {
     | "pan"
     | "handle"
     | "object"
+    | "group"
     | "draw-line"
     | "draw-shape"
     | "draw-measure"
@@ -237,6 +251,7 @@ type DragState = {
   historyPushed: boolean;
   target?: HandleTarget;
   objectTarget?: ObjectTarget;
+  groupTarget?: GroupTarget;
   canvasStrokeId?: number;
 };
 
@@ -474,9 +489,15 @@ const App = () => {
   const [zoomSensitivity, setZoomSensitivity] = useState(1);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedObject, setSelectedObject] = useState<ObjectTarget | null>(null);
+  const [groupSelectionMode, setGroupSelectionMode] = useState(false);
+  const [lockedGroupTargets, setLockedGroupTargets] = useState<GroupTarget[]>([]);
+  const [isGroupLocked, setIsGroupLocked] = useState(false);
   const [hoverMenu, setHoverMenu] = useState<HoverMenu | null>(null);
   const [hoverSnapPoint, setHoverSnapPoint] = useState<HoverSnapPoint | null>(null);
   const [calculatorGuide, setCalculatorGuide] = useState<CalculatorGuide | null>(null);
+  const [calculatorMeanPoint, setCalculatorMeanPoint] =
+    useState<CalculatorMeanPoint | null>(null);
+  const [correlationGuide, setCorrelationGuide] = useState<CorrelationGuide | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -760,6 +781,10 @@ const App = () => {
     setDraftPoints([]);
     setHoverMenu(null);
     setHoverSnapPoint(null);
+    setCalculatorGuide(null);
+    setCalculatorMeanPoint(null);
+    setCorrelationGuide(null);
+    clearLockedGroup();
     syncNextIdsFromCapture(capture);
   };
 
@@ -1853,6 +1878,92 @@ const App = () => {
     );
   };
 
+  const getGroupTargetKey = (target: GroupTarget) =>
+    target.kind === "data"
+      ? `${target.kind}:${target.id}:${target.pointIndex}`
+      : `${target.kind}:${target.id}`;
+
+  const isGroupTargetSelected = (target: GroupTarget) =>
+    lockedGroupTargets.some(
+      (selected) => getGroupTargetKey(selected) === getGroupTargetKey(target)
+    );
+
+  const toggleGroupTarget = (target: GroupTarget) => {
+    setLockedGroupTargets((current) => {
+      const key = getGroupTargetKey(target);
+      return current.some((item) => getGroupTargetKey(item) === key)
+        ? current.filter((item) => getGroupTargetKey(item) !== key)
+        : [...current, target];
+    });
+    setIsGroupLocked(false);
+  };
+
+  const moveLockedGroup = (dx: number, dy: number) => {
+    const shiftPoint = (point: GraphPoint): GraphPoint => ({
+      ...point,
+      x: roundCoordinate(point.x + dx),
+      y: roundCoordinate(point.y + dy),
+    });
+    const selected = new Set(lockedGroupTargets.map(getGroupTargetKey));
+    setPoints((current) =>
+      current.map((point) =>
+        selected.has(`point:${point.id}`) ? shiftPoint(point) : point
+      )
+    );
+    setDataPlots((current) =>
+      current.map((plot) => ({
+        ...plot,
+        values: plot.values.map((value, pointIndex) =>
+          selected.has(`data:${plot.id}:${pointIndex}`)
+            ? {
+                x: roundCoordinate(value.x + dx),
+                y: roundCoordinate(value.y + dy),
+              }
+            : value
+        ),
+      }))
+    );
+    setLines((current) =>
+      current.map((line) =>
+        selected.has(`line:${line.id}`)
+          ? { ...line, a: shiftPoint(line.a), b: shiftPoint(line.b) }
+          : line
+      )
+    );
+    setCurves((current) =>
+      current.map((curve) =>
+        selected.has(`curve:${curve.id}`)
+          ? {
+              ...curve,
+              a: shiftPoint(curve.a),
+              b: shiftPoint(curve.b),
+              c: shiftPoint(curve.c),
+            }
+          : curve
+      )
+    );
+    setShapes((current) =>
+      current.map((shape) =>
+        selected.has(`shape:${shape.id}`)
+          ? { ...shape, a: shiftPoint(shape.a), b: shiftPoint(shape.b) }
+          : shape
+      )
+    );
+    setMeasures((current) =>
+      current.map((measure) =>
+        selected.has(`measure:${measure.id}`)
+          ? { ...measure, a: shiftPoint(measure.a), b: shiftPoint(measure.b) }
+          : measure
+      )
+    );
+  };
+
+  const clearLockedGroup = () => {
+    setLockedGroupTargets([]);
+    setIsGroupLocked(false);
+    setGroupSelectionMode(false);
+  };
+
   const moveShapeAreaLabel = (
     shapeId: number,
     clientX: number,
@@ -2496,6 +2607,30 @@ const App = () => {
       (canDragExistingGeometry || canTargetObjectForPlot)
         ? findNearestObject(event.clientX, event.clientY)
         : null;
+    const groupTarget: GroupTarget | null = target
+      ? target.kind === "data"
+        ? { kind: "data", id: target.id, pointIndex: target.pointIndex }
+        : target.kind === "point"
+          ? { kind: "point", id: target.id }
+          : { kind: target.kind, id: target.id }
+      : objectTarget;
+    const isLockedGroupDrag =
+      canDragExistingGeometry &&
+      isGroupLocked &&
+      groupTarget !== null &&
+      isGroupTargetSelected(groupTarget);
+
+    if (canDragExistingGeometry && groupSelectionMode && groupTarget) {
+      toggleGroupTarget(groupTarget);
+      if (groupTarget.kind !== "point" && groupTarget.kind !== "data") {
+        setSelectedObject({ kind: groupTarget.kind, id: groupTarget.id });
+      } else {
+        setSelectedObject(null);
+      }
+      dragRef.current = null;
+      updateCursor(event.clientX, event.clientY);
+      return;
+    }
     const startWorld =
       tool === "measure"
         ? getMeasurePoint(event.clientX, event.clientY)
@@ -2530,7 +2665,9 @@ const App = () => {
       velocityX: 0,
       velocityY: 0,
       moved: false,
-      mode: target
+      mode: isLockedGroupDrag
+        ? "group"
+        : target
         ? "handle"
         : objectTarget && canDragExistingGeometry
           ? "object"
@@ -2542,6 +2679,7 @@ const App = () => {
       historyPushed: false,
       target: target ?? undefined,
       objectTarget: objectTarget ?? undefined,
+      groupTarget: groupTarget ?? undefined,
     };
     updateCursor(event.clientX, event.clientY);
   };
@@ -2636,6 +2774,19 @@ const App = () => {
       }
       moveObject(
         drag.objectTarget,
+        roundCoordinate(dx / view.pixelsPerUnit),
+        roundCoordinate(-dy / view.pixelsPerUnit)
+      );
+    }
+
+    if (drag.mode === "group") {
+      setHoverMenu(null);
+      setHoverSnapPoint(null);
+      if (!drag.historyPushed && drag.historySnapshot) {
+        pushHistory(drag.historySnapshot);
+        drag.historyPushed = true;
+      }
+      moveLockedGroup(
         roundCoordinate(dx / view.pixelsPerUnit),
         roundCoordinate(-dy / view.pixelsPerUnit)
       );
@@ -2864,12 +3015,16 @@ const App = () => {
         canvasStrokes,
         hoverSnapPoint,
         calculatorGuide,
+        calculatorMeanPoint,
+        correlationGuide,
         draftPoints,
         cursor,
         connectPoints,
         selectedColor,
         tool,
         selectedObject,
+        lockedGroupTargets,
+        isGroupLocked,
         showLeastSquares,
         leastSquares: leastSquaresSummary,
       });
@@ -2879,7 +3034,7 @@ const App = () => {
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [calculatorGuide, canvasStrokes, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+  }, [calculatorGuide, calculatorMeanPoint, canvasStrokes, connectPoints, correlationGuide, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, isGroupLocked, leastSquaresSummary, lines, lockedGroupTargets, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2894,17 +3049,21 @@ const App = () => {
         canvasStrokes,
         hoverSnapPoint,
         calculatorGuide,
+        calculatorMeanPoint,
+        correlationGuide,
         draftPoints,
         cursor,
         connectPoints,
         selectedColor,
         tool,
         selectedObject,
+        lockedGroupTargets,
+        isGroupLocked,
         showLeastSquares,
         leastSquares: leastSquaresSummary,
       });
     }
-  }, [calculatorGuide, canvasStrokes, connectPoints, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, leastSquaresSummary, lines, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+  }, [calculatorGuide, calculatorMeanPoint, canvasStrokes, connectPoints, correlationGuide, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, isGroupLocked, leastSquaresSummary, lines, lockedGroupTargets, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(
     () => () => {
@@ -3721,6 +3880,52 @@ const App = () => {
           >
             Remove selected
           </button>
+          <div className="group-controls">
+            <label className="toggle">
+              <input
+                checked={groupSelectionMode}
+                onChange={(event) => {
+                  setGroupSelectionMode(event.target.checked);
+                  if (event.target.checked) {
+                    setIsGroupLocked(false);
+                    selectTool("pan");
+                  }
+                }}
+                type="checkbox"
+              />
+              <span>Select multiple in Pan mode</span>
+            </label>
+            <small>
+              {lockedGroupTargets.length} selected · {isGroupLocked ? "locked" : "unlocked"}
+            </small>
+            <div className="group-control-actions">
+              <button
+                disabled={lockedGroupTargets.length < 2}
+                onClick={() => {
+                  setIsGroupLocked(true);
+                  setGroupSelectionMode(false);
+                  selectTool("pan");
+                }}
+                type="button"
+              >
+                Lock group
+              </button>
+              <button
+                disabled={!isGroupLocked}
+                onClick={() => setIsGroupLocked(false)}
+                type="button"
+              >
+                Unlock
+              </button>
+              <button
+                disabled={lockedGroupTargets.length === 0}
+                onClick={clearLockedGroup}
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
         </section>
 
         <section className="control-section">
@@ -4794,7 +4999,9 @@ const App = () => {
       </section>
       <ScientificCalculator
         context={calculatorContext}
+        onCorrelationGuideChange={setCorrelationGuide}
         onGuideChange={setCalculatorGuide}
+        onMeanPointChange={setCalculatorMeanPoint}
       />
     </main>
   );
@@ -4828,12 +5035,16 @@ const GraphPagePreview = ({
         canvasStrokes: state.canvasStrokes ?? [],
         hoverSnapPoint: null,
         calculatorGuide: null,
+        calculatorMeanPoint: null,
+        correlationGuide: null,
         draftPoints: [],
         cursor: null,
         connectPoints: false,
         selectedColor: state.selectedColor,
         tool: "pan",
         selectedObject: null,
+        lockedGroupTargets: [],
+        isGroupLocked: false,
         showLeastSquares: false,
         leastSquares: null,
       });
@@ -5536,6 +5747,34 @@ const MeasureDetails = ({ measure }: { measure: GraphMeasure }) => (
   </div>
 );
 
+const getGroupTargetIdentity = (target: GroupTarget) =>
+  target.kind === "data"
+    ? `${target.kind}:${target.id}:${target.pointIndex}`
+    : `${target.kind}:${target.id}`;
+
+const isGraphGroupTargetSelected = (
+  targets: GroupTarget[],
+  target: GroupTarget
+) =>
+  targets.some(
+    (selected) => getGroupTargetIdentity(selected) === getGroupTargetIdentity(target)
+  );
+
+const drawGroupSelectionRing = (
+  context: CanvasRenderingContext2D,
+  screen: { x: number; y: number },
+  isLocked: boolean
+) => {
+  context.save();
+  context.beginPath();
+  context.strokeStyle = isLocked ? "#39ff14" : "#31a8ff";
+  context.lineWidth = 2.6;
+  context.setLineDash([4, 3]);
+  context.arc(screen.x, screen.y, 10, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
+};
+
 const drawGraph = (
   canvas: HTMLCanvasElement,
   view: ViewState,
@@ -5549,12 +5788,16 @@ const drawGraph = (
     canvasStrokes: CanvasStroke[];
     hoverSnapPoint: HoverSnapPoint | null;
     calculatorGuide: CalculatorGuide | null;
+    calculatorMeanPoint: CalculatorMeanPoint | null;
+    correlationGuide: CorrelationGuide | null;
     draftPoints: GraphPoint[];
     cursor: GraphPoint | null;
     connectPoints: boolean;
     selectedColor: string;
     tool: Tool;
     selectedObject: ObjectTarget | null;
+    lockedGroupTargets: GroupTarget[];
+    isGroupLocked: boolean;
     showLeastSquares: boolean;
     leastSquares: LeastSquaresSummary | null;
   }
@@ -5649,6 +5892,14 @@ const drawGraph = (
     drawCalculatorGuide(context, graph.calculatorGuide, width, height, toScreen);
   }
 
+  if (graph.correlationGuide) {
+    drawCorrelationGuide(context, graph.correlationGuide, width, height, toScreen);
+  }
+
+  if (graph.calculatorMeanPoint) {
+    drawCalculatorMeanPoint(context, graph.calculatorMeanPoint, width, height, toScreen);
+  }
+
   if (graph.showLeastSquares && graph.leastSquares) {
     drawLeastSquaresSquares(
       context,
@@ -5660,7 +5911,9 @@ const drawGraph = (
   }
 
   graph.shapes.forEach((shape, index) => {
-    const isSelected = isSelectedObject(graph.selectedObject, "shape", shape.id);
+    const isSelected =
+      isSelectedObject(graph.selectedObject, "shape", shape.id) ||
+      isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "shape", id: shape.id });
     drawShape(context, shape, toScreen, shape.color);
     if (isSelected) {
       drawShapeSelection(context, shape, toScreen);
@@ -5674,7 +5927,9 @@ const drawGraph = (
 
   graph.curves.forEach((curve, index) => {
     const coefficients = getQuadraticCoefficients(curve);
-    const isSelected = isSelectedObject(graph.selectedObject, "curve", curve.id);
+    const isSelected =
+      isSelectedObject(graph.selectedObject, "curve", curve.id) ||
+      isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "curve", id: curve.id });
     if (coefficients) {
       if (isSelected) {
         context.strokeStyle = "rgba(36, 33, 30, 0.28)";
@@ -5712,7 +5967,9 @@ const drawGraph = (
   });
 
   graph.lines.forEach((line, index) => {
-    const isSelected = isSelectedObject(graph.selectedObject, "line", line.id);
+    const isSelected =
+      isSelectedObject(graph.selectedObject, "line", line.id) ||
+      isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "line", id: line.id });
     const drawVisibleLine = () => {
       if (line.reference) {
         const a = toScreen(line.a);
@@ -5764,6 +6021,21 @@ const drawGraph = (
 
   graph.dataPlots.forEach((plot) => {
     drawDataPlot(context, plot, toScreen);
+    plot.values.forEach((value, pointIndex) => {
+      if (
+        isGraphGroupTargetSelected(graph.lockedGroupTargets, {
+          kind: "data",
+          id: plot.id,
+          pointIndex,
+        })
+      ) {
+        drawGroupSelectionRing(
+          context,
+          toScreen({ id: 0, x: value.x, y: value.y }),
+          graph.isGroupLocked
+        );
+      }
+    });
   });
 
   if (graph.hoverSnapPoint) {
@@ -5785,7 +6057,9 @@ const drawGraph = (
   }
 
   graph.measures.forEach((measure, index) => {
-    const isSelected = isSelectedObject(graph.selectedObject, "measure", measure.id);
+    const isSelected =
+      isSelectedObject(graph.selectedObject, "measure", measure.id) ||
+      isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "measure", id: measure.id });
     const start = toScreen(measure.a);
     const end = toScreen(measure.b);
 
@@ -5889,6 +6163,9 @@ const drawGraph = (
     context.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
     context.fill();
     context.stroke();
+    if (isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "point", id: point.id })) {
+      drawGroupSelectionRing(context, screen, graph.isGroupLocked);
+    }
   });
 
   drawCanvasStrokes(context, graph.canvasStrokes, toScreen);
@@ -6078,6 +6355,11 @@ const drawCalculatorGuide = (
   height: number,
   toScreen: (point: GraphPoint) => { x: number; y: number }
 ) => {
+  if (guide.statistic && guide.pairs && guide.pairs.length > 0) {
+    drawCalculatorStatisticGuide(context, guide, width, height, toScreen);
+    return;
+  }
+
   const y = toScreen({ id: 0, x: 0, y: guide.value }).y;
   if (y < -80 || y > height + 80) return;
 
@@ -6104,6 +6386,514 @@ const drawCalculatorGuide = (
   context.stroke();
   context.fillStyle = "#7f2a18";
   context.fillText(label, labelX + 7, labelY + 5);
+  context.restore();
+};
+
+const drawCalculatorStatisticGuide = (
+  context: CanvasRenderingContext2D,
+  guide: CalculatorGuide,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const pairs = guide.pairs ?? [];
+  if (pairs.length === 0 || !guide.statistic) return;
+  const meanX = getAverage(pairs.map((pair) => pair.x));
+  const meanY = getAverage(pairs.map((pair) => pair.y));
+  const meanScreen = toScreen({ id: 0, x: meanX, y: meanY });
+  const accent =
+    guide.statistic === "SD"
+      ? "#2f80ed"
+      : guide.statistic === "VAR"
+        ? "#9b51e0"
+        : guide.statistic === "COVAR"
+          ? "#f2994a"
+          : "#00b894";
+
+  const drawHorizontal = (value: number, dash = [8, 6], alpha = 0.78) => {
+    const y = toScreen({ id: 0, x: 0, y: value }).y;
+    context.save();
+    context.globalAlpha = alpha;
+    context.strokeStyle = accent;
+    context.lineWidth = 2;
+    context.setLineDash(dash);
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+    context.restore();
+  };
+  const drawVertical = (value: number, dash = [8, 6], alpha = 0.78) => {
+    const x = toScreen({ id: 0, x: value, y: 0 }).x;
+    context.save();
+    context.globalAlpha = alpha;
+    context.strokeStyle = accent;
+    context.lineWidth = 2;
+    context.setLineDash(dash);
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+    context.stroke();
+    context.restore();
+  };
+
+  context.save();
+  if (guide.statistic === "MEDIAN") {
+    const medianX = getMedian(pairs.map((pair) => pair.x));
+    const medianY = getMedian(pairs.map((pair) => pair.y));
+    const medianScreen = toScreen({ id: 0, x: medianX, y: medianY });
+    drawHorizontal(medianY);
+    drawVertical(medianX);
+    drawStatisticMarker(context, medianScreen, accent);
+    drawStatisticLabel(context, guide.label, medianScreen.x + 14, medianScreen.y - 28, accent, width, height);
+  }
+
+  if (guide.statistic === "SD") {
+    const sdX = Math.sqrt(getVariance(pairs.map((pair) => pair.x)));
+    const sdY = Math.sqrt(getVariance(pairs.map((pair) => pair.y)));
+    const topLeft = toScreen({ id: 0, x: meanX - sdX, y: meanY + sdY });
+    const bottomRight = toScreen({ id: 0, x: meanX + sdX, y: meanY - sdY });
+    context.fillStyle = "rgba(47, 128, 237, 0.1)";
+    context.strokeStyle = "rgba(47, 128, 237, 0.56)";
+    context.lineWidth = 1.5;
+    context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+    context.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+    drawHorizontal(meanY);
+    drawVertical(meanX);
+    drawHorizontal(meanY - sdY, [4, 5], 0.6);
+    drawHorizontal(meanY + sdY, [4, 5], 0.6);
+    drawVertical(meanX - sdX, [4, 5], 0.6);
+    drawVertical(meanX + sdX, [4, 5], 0.6);
+    drawStatisticMarker(context, meanScreen, accent);
+    drawStatisticLabel(context, `${guide.label}; x SD = ${formatNumber(sdX)}`, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+  }
+
+  if (guide.statistic === "VAR") {
+    drawHorizontal(meanY);
+    pairs.forEach((pair, index) => {
+      const deviation = pair.y - meanY;
+      const side = Math.abs(deviation);
+      if (side < 0.000001) return;
+      const direction = index % 2 === 0 ? 1 : -1;
+      const a = toScreen({ id: 0, x: pair.x, y: meanY });
+      const b = toScreen({ id: 0, x: pair.x + side * direction, y: pair.y });
+      context.fillStyle = "rgba(155, 81, 224, 0.11)";
+      context.strokeStyle = "rgba(155, 81, 224, 0.78)";
+      context.lineWidth = 1.5;
+      context.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.fillStyle = "#6f2da8";
+      context.font = "700 11px Inter, system-ui, sans-serif";
+      context.fillText(formatNumber(deviation ** 2), (a.x + b.x) / 2 + 4, (a.y + b.y) / 2);
+    });
+    drawStatisticMarker(context, meanScreen, accent);
+    drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+  }
+
+  if (guide.statistic === "COVAR") {
+    drawHorizontal(meanY);
+    drawVertical(meanX);
+    pairs.forEach((pair) => {
+      const screen = toScreen({ id: 0, x: pair.x, y: pair.y });
+      const product = (pair.x - meanX) * (pair.y - meanY);
+      context.fillStyle = product >= 0 ? "rgba(242, 153, 74, 0.18)" : "rgba(235, 87, 87, 0.16)";
+      context.strokeStyle = product >= 0 ? "#f2994a" : "#eb5757";
+      context.lineWidth = 1.5;
+      context.fillRect(
+        Math.min(meanScreen.x, screen.x),
+        Math.min(meanScreen.y, screen.y),
+        Math.abs(screen.x - meanScreen.x),
+        Math.abs(screen.y - meanScreen.y)
+      );
+      context.strokeRect(
+        Math.min(meanScreen.x, screen.x),
+        Math.min(meanScreen.y, screen.y),
+        Math.abs(screen.x - meanScreen.x),
+        Math.abs(screen.y - meanScreen.y)
+      );
+    });
+    drawStatisticMarker(context, meanScreen, accent);
+    drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+  }
+  context.restore();
+};
+
+const drawStatisticMarker = (
+  context: CanvasRenderingContext2D,
+  screen: { x: number; y: number },
+  color: string
+) => {
+  context.save();
+  context.beginPath();
+  context.fillStyle = "#ffffff";
+  context.strokeStyle = color;
+  context.lineWidth = 3;
+  context.arc(screen.x, screen.y, 7, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.restore();
+};
+
+const drawStatisticLabel = (
+  context: CanvasRenderingContext2D,
+  label: string,
+  x: number,
+  y: number,
+  color: string,
+  width: number,
+  height: number
+) => {
+  context.save();
+  context.font = "700 12px Inter, system-ui, sans-serif";
+  const display = label.length > 54 ? `${label.slice(0, 51)}...` : label;
+  const labelWidth = context.measureText(display).width + 14;
+  const labelX = clamp(x, 8, Math.max(8, width - labelWidth - 8));
+  const labelY = clamp(y, 8, Math.max(8, height - 28));
+  context.fillStyle = "rgba(255, 255, 255, 0.96)";
+  context.strokeStyle = color;
+  context.lineWidth = 1.5;
+  roundRect(context, labelX, labelY, labelWidth, 22, 5);
+  context.fill();
+  context.stroke();
+  context.fillStyle = color;
+  context.fillText(display, labelX + 7, labelY + 5);
+  context.restore();
+};
+
+const getAverage = (values: number[]) =>
+  values.reduce((sum, value) => sum + value, 0) / values.length;
+
+const getMedian = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+
+const getVariance = (values: number[]) => {
+  const average = getAverage(values);
+  return getAverage(values.map((value) => (value - average) ** 2));
+};
+
+const drawCalculatorMeanPoint = (
+  context: CanvasRenderingContext2D,
+  meanPoint: CalculatorMeanPoint,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const screen = toScreen({ id: 0, x: meanPoint.x, y: meanPoint.y });
+  context.save();
+  context.beginPath();
+  context.strokeStyle = "rgba(57, 255, 20, 0.72)";
+  context.lineWidth = 2;
+  context.setLineDash([8, 6]);
+  context.moveTo(0, screen.y);
+  context.lineTo(width, screen.y);
+  context.moveTo(screen.x, 0);
+  context.lineTo(screen.x, height);
+  context.stroke();
+  context.setLineDash([]);
+  context.shadowColor = "#39ff14";
+  context.shadowBlur = 18;
+  context.beginPath();
+  context.fillStyle = "#ecffe7";
+  context.strokeStyle = "#39ff14";
+  context.lineWidth = 4;
+  context.arc(screen.x, screen.y, 9, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.shadowBlur = 0;
+  context.fillStyle = "#166b08";
+  context.font = "800 12px Inter, system-ui, sans-serif";
+  context.fillText(`mean (${formatNumber(meanPoint.x)}, ${formatNumber(meanPoint.y)})`, screen.x + 14, screen.y - 12);
+  context.restore();
+};
+
+const drawCorrelationGuide = (
+  context: CanvasRenderingContext2D,
+  guide: CorrelationGuide,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  if (guide.pairs.length < 2) return;
+  const geometry = buildCorrelationGeometry(guide.pairs);
+  const active = new Set(guide.highlights);
+  const has = (...highlights: CorrelationHighlight[]) =>
+    highlights.some((highlight) => active.has(highlight));
+  const showAll = has("all");
+  const showComovement = showAll || has("comovement", "positive-comovement", "negative-comovement");
+  const showHorizontal = showAll || has("horizontal", "x-spread", "denominator") || showComovement;
+  const showVertical = showAll || has("vertical", "y-spread", "denominator") || showComovement;
+  const showXSpread = has("x-spread", "denominator");
+  const showYSpread = has("y-spread", "denominator");
+  const showMeanX = showAll || has("mean", "mean-x") || showHorizontal;
+  const showMeanY = showAll || has("mean", "mean-y") || showVertical;
+
+  context.save();
+  drawCorrelationMeanLines(context, geometry.meanX, geometry.meanY, width, height, toScreen, showMeanX, showMeanY);
+  drawStatisticMarker(context, toScreen({ id: 0, x: geometry.meanX, y: geometry.meanY }), "#39ff14");
+
+  if (showXSpread) {
+    geometry.items.forEach((item) =>
+      drawHorizontalSpreadSquare(context, item, geometry.meanX, geometry.meanY, toScreen)
+    );
+  }
+
+  if (showYSpread) {
+    geometry.items.forEach((item) =>
+      drawVerticalSpreadSquare(context, item, geometry.meanX, geometry.meanY, toScreen)
+    );
+  }
+
+  if (showComovement) {
+    geometry.items.forEach((item) => {
+      const isolatePositive = has("positive-comovement") && !has("comovement", "negative-comovement") && !showAll;
+      const isolateNegative = has("negative-comovement") && !has("comovement", "positive-comovement") && !showAll;
+      if ((isolatePositive && item.product < 0) || (isolateNegative && item.product >= 0)) return;
+      drawComovementRectangle(context, item, geometry.meanX, geometry.meanY, toScreen);
+    });
+  }
+
+  geometry.items.forEach((item) => {
+    const point = toScreen({ id: 0, ...item.point });
+    if (showHorizontal && !showXSpread) {
+      drawDirectedCorrelationSegment(
+        context,
+        toScreen({ id: 0, x: geometry.meanX, y: item.point.y }),
+        point,
+        "#00b8ff"
+      );
+    }
+    if (showVertical && !showYSpread) {
+      drawDirectedCorrelationSegment(
+        context,
+        toScreen({ id: 0, x: item.point.x, y: geometry.meanY }),
+        point,
+        "#ff45a0"
+      );
+    }
+  });
+
+  drawCorrelationSummary(context, guide.highlights, geometry, width, height);
+  context.restore();
+};
+
+const drawCorrelationMeanLines = (
+  context: CanvasRenderingContext2D,
+  meanX: number,
+  meanY: number,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number },
+  showMeanX: boolean,
+  showMeanY: boolean
+) => {
+  const meanScreen = toScreen({ id: 0, x: meanX, y: meanY });
+  context.save();
+  context.setLineDash([7, 5]);
+  context.strokeStyle = "rgba(57, 255, 20, 0.7)";
+  context.lineWidth = 1.5;
+  context.beginPath();
+  if (showMeanY) {
+    context.moveTo(0, meanScreen.y);
+    context.lineTo(width, meanScreen.y);
+  }
+  if (showMeanX) {
+    context.moveTo(meanScreen.x, 0);
+    context.lineTo(meanScreen.x, height);
+  }
+  context.stroke();
+  context.restore();
+};
+
+const drawHorizontalSpreadSquare = (
+  context: CanvasRenderingContext2D,
+  item: CorrelationGeometryItem,
+  meanX: number,
+  meanY: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const direction = item.point.y >= meanY ? 1 : -1;
+  const start = { x: meanX, y: item.point.y };
+  const end = { x: item.point.x, y: item.point.y + direction * item.absoluteDx };
+  drawCorrelationRectangle(context, start.x, start.y, end.x, end.y, toScreen, "rgba(0, 184, 255, 0.14)", "#00b8ff");
+  drawDirectedCorrelationSegment(context, toScreen({ id: 0, ...start }), toScreen({ id: 0, x: item.point.x, y: item.point.y }), "#00b8ff");
+  drawCorrelationObjectLabel(
+    context,
+    toScreen({ id: 0, x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }),
+    [
+      `${item.pointLabel}: dx = ${formatNumber(item.dx)}`,
+      `|dx| = ${formatNumber(item.absoluteDx)}`,
+      `dx² = ${formatNumber(item.xSquared)}`,
+    ],
+    "#0077a8"
+  );
+};
+
+const drawVerticalSpreadSquare = (
+  context: CanvasRenderingContext2D,
+  item: CorrelationGeometryItem,
+  meanX: number,
+  meanY: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const direction = item.point.x >= meanX ? 1 : -1;
+  const start = { x: item.point.x, y: meanY };
+  const end = { x: item.point.x + direction * item.absoluteDy, y: item.point.y };
+  drawCorrelationRectangle(context, start.x, start.y, end.x, end.y, toScreen, "rgba(255, 69, 160, 0.13)", "#ff45a0");
+  drawDirectedCorrelationSegment(context, toScreen({ id: 0, ...start }), toScreen({ id: 0, x: item.point.x, y: item.point.y }), "#ff45a0");
+  drawCorrelationObjectLabel(
+    context,
+    toScreen({ id: 0, x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }),
+    [
+      `${item.pointLabel}: dy = ${formatNumber(item.dy)}`,
+      `|dy| = ${formatNumber(item.absoluteDy)}`,
+      `dy² = ${formatNumber(item.ySquared)}`,
+    ],
+    "#b62772"
+  );
+};
+
+const drawComovementRectangle = (
+  context: CanvasRenderingContext2D,
+  item: CorrelationGeometryItem,
+  meanX: number,
+  meanY: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const positive = item.product >= 0;
+  const color = positive ? "#12a55b" : "#e66f19";
+  drawCorrelationRectangle(
+    context,
+    meanX,
+    meanY,
+    item.point.x,
+    item.point.y,
+    toScreen,
+    positive ? "rgba(50, 215, 126, 0.24)" : "rgba(255, 159, 67, 0.24)",
+    color
+  );
+  drawCorrelationObjectLabel(
+    context,
+    toScreen({ id: 0, x: (meanX + item.point.x) / 2, y: (meanY + item.point.y) / 2 }),
+    [
+      `${item.pointLabel}: dx=${formatNumber(item.dx)}, dy=${formatNumber(item.dy)}`,
+      `dx·dy = ${formatNumber(item.product)}`,
+      positive ? "positive comovement" : "negative comovement",
+    ],
+    color
+  );
+};
+
+const drawCorrelationRectangle = (
+  context: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number },
+  fill: string,
+  stroke: string
+) => {
+  const a = toScreen({ id: 0, x: x1, y: y1 });
+  const b = toScreen({ id: 0, x: x2, y: y2 });
+  context.save();
+  context.beginPath();
+  context.fillStyle = fill;
+  context.strokeStyle = stroke;
+  context.lineWidth = 2;
+  context.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+  context.fill();
+  context.stroke();
+  context.restore();
+};
+
+const drawDirectedCorrelationSegment = (
+  context: CanvasRenderingContext2D,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  color: string
+) => {
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+  context.beginPath();
+  context.moveTo(end.x, end.y);
+  context.lineTo(end.x - 8 * Math.cos(angle - Math.PI / 6), end.y - 8 * Math.sin(angle - Math.PI / 6));
+  context.lineTo(end.x - 8 * Math.cos(angle + Math.PI / 6), end.y - 8 * Math.sin(angle + Math.PI / 6));
+  context.closePath();
+  context.fill();
+  context.restore();
+};
+
+const drawCorrelationObjectLabel = (
+  context: CanvasRenderingContext2D,
+  anchor: { x: number; y: number },
+  lines: string[],
+  color: string
+) => {
+  context.save();
+  context.font = "700 10px Inter, system-ui, sans-serif";
+  const boxWidth = Math.max(...lines.map((line) => context.measureText(line).width)) + 10;
+  const boxHeight = lines.length * 13 + 7;
+  const x = anchor.x + 5;
+  const y = anchor.y - boxHeight / 2;
+  context.fillStyle = "rgba(255, 255, 255, 0.9)";
+  context.strokeStyle = color;
+  context.lineWidth = 1;
+  roundRect(context, x, y, boxWidth, boxHeight, 4);
+  context.fill();
+  context.stroke();
+  context.fillStyle = color;
+  lines.forEach((line, index) => context.fillText(line, x + 5, y + 4 + index * 13));
+  context.restore();
+};
+
+const drawCorrelationSummary = (
+  context: CanvasRenderingContext2D,
+  highlights: CorrelationHighlight[],
+  geometry: ReturnType<typeof buildCorrelationGeometry>,
+  width: number,
+  height: number
+) => {
+  const active = new Set(highlights);
+  const lines: string[] = [];
+  if (active.has("x-spread")) lines.push(`Σ(xi - x̄)² = ${formatNumber(geometry.xSpread)}`);
+  if (active.has("y-spread")) lines.push(`Σ(yi - ȳ)² = ${formatNumber(geometry.ySpread)}`);
+  if (active.has("comovement") || active.has("positive-comovement") || active.has("negative-comovement")) {
+    lines.push(`Σ[(xi - x̄)(yi - ȳ)] = ${formatNumber(geometry.rawComovement)}`);
+  }
+  if (active.has("denominator") || active.has("all")) {
+    lines.push(`√[${formatNumber(geometry.xSpread)} × ${formatNumber(geometry.ySpread)}] = ${formatNumber(geometry.denominator)}`);
+  }
+  if (active.has("all")) lines.push(`r = ${geometry.coefficient === null ? "undefined" : formatNumber(geometry.coefficient)}`);
+  highlights.forEach((highlight) => {
+    const explanation = getCorrelationFormulaComponent(highlight)?.explanation;
+    if (explanation && !lines.includes(explanation)) lines.push(explanation);
+  });
+  if (lines.length === 0) return;
+  context.save();
+  context.font = "700 11px Inter, system-ui, sans-serif";
+  const visibleLines = lines.slice(0, 6);
+  const boxWidth = Math.min(width - 24, Math.max(...visibleLines.map((line) => context.measureText(line).width)) + 16);
+  const boxHeight = visibleLines.length * 15 + 10;
+  const x = 12;
+  const y = clamp(34, 8, Math.max(8, height - boxHeight - 8));
+  context.fillStyle = "rgba(255, 255, 255, 0.94)";
+  context.strokeStyle = "#3d5158";
+  context.lineWidth = 1;
+  roundRect(context, x, y, boxWidth, boxHeight, 5);
+  context.fill();
+  context.stroke();
+  context.fillStyle = "#243238";
+  visibleLines.forEach((line, index) => context.fillText(line, x + 8, y + 5 + index * 15));
   context.restore();
 };
 

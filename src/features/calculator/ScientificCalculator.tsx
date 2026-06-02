@@ -4,25 +4,48 @@ import {
   evaluateExpression,
   getCalculatorPairs,
   getCalculatorValues,
+  getCorrelationSummary,
+  getMeanPoint,
   getSelectedObjectSummary,
   type CalculatorDataContext,
 } from "./calculator";
+import { CORRELATION_FORMULA_COMPONENTS } from "../formulaVisualization/correlationFormula";
+import type {
+  CalculatorGuide,
+  CalculatorMeanPoint,
+  CorrelationGuide,
+  CorrelationHighlight,
+} from "../../graphTypes";
 
 type CalculatorProps = {
   context: CalculatorDataContext;
-  onGuideChange: (guide: { label: string; value: number } | null) => void;
+  onGuideChange: (guide: CalculatorGuide | null) => void;
+  onMeanPointChange: (point: CalculatorMeanPoint | null) => void;
+  onCorrelationGuideChange: (guide: CorrelationGuide | null) => void;
 };
 
 const SCIENCE_KEYS = ["sin(", "cos(", "tan(", "sqrt(", "log10(", "log(", "π", "e", "^", "(", ")"];
 const BASIC_KEYS = ["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "=", "+"];
 const STAT_KEYS = ["MEAN", "SD", "VAR", "COVAR", "MEDIAN"] as const;
+const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
+const CALCULATOR_INPUT_DETACH_WIDTH = 270;
+const CALCULATOR_DETACHED_INPUT_WIDTH = 326;
+type ResizeDirection = (typeof RESIZE_DIRECTIONS)[number];
 
-export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps) => {
+export const ScientificCalculator = ({
+  context,
+  onGuideChange,
+  onMeanPointChange,
+  onCorrelationGuideChange,
+}: CalculatorProps) => {
   const [expression, setExpression] = useState("");
   const [result, setResult] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const [correlationHighlights, setCorrelationHighlights] =
+    useState<CorrelationHighlight[]>([]);
   const [position, setPosition] = useState({ x: 380, y: 84 });
+  const [size, setSize] = useState<{ width: number; height?: number }>({ width: 340 });
   const [drag, setDrag] = useState<{
     pointerId: number;
     startX: number;
@@ -31,13 +54,32 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
     originY: number;
     moved: boolean;
   } | null>(null);
+  const [resize, setResize] = useState<{
+    pointerId: number;
+    direction: ResizeDirection;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    originWidth: number;
+    originHeight: number;
+  } | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
   const collapsedDragMoved = useRef(false);
+  const compact = size.width <= CALCULATOR_INPUT_DETACH_WIDTH;
 
   const selectedSummary = getSelectedObjectSummary(context);
   const dataSummary = useMemo(() => {
     const values = getCalculatorValues(context);
     const pairs = getCalculatorPairs(context);
     return `${values.length} values, ${pairs.length} pairs`;
+  }, [context]);
+  const correlationSummary = useMemo(() => {
+    try {
+      return getCorrelationSummary(context);
+    } catch {
+      return null;
+    }
   }, [context]);
 
   useEffect(() => {
@@ -74,17 +116,52 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
   const runStatistic = (name: (typeof STAT_KEYS)[number]) => {
     try {
       const value = calculateStatistic(name, context);
+      const pairs = getCalculatorPairs(context);
       setExpression(name);
       setResult(value);
       setError("");
-      onGuideChange({ label: `${name} = ${value}`, value });
+      onCorrelationGuideChange(null);
+      if (name === "MEAN") {
+        onGuideChange(null);
+        onMeanPointChange(getMeanPoint(context));
+      } else {
+        onMeanPointChange(null);
+        onGuideChange({ label: `${name} = ${value}`, value, statistic: name, pairs });
+      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not calculate");
       onGuideChange(null);
     }
   };
 
+  const showCorrelationTerm = (highlight: CorrelationHighlight) => {
+    try {
+      const pairs = getCalculatorPairs(context);
+      if (pairs.length < 2) {
+        throw new Error("Correlation needs at least two x,y pairs.");
+      }
+      const nextHighlights = correlationHighlights.includes(highlight)
+        ? correlationHighlights.filter((current) => current !== highlight)
+        : [...correlationHighlights, highlight];
+      setCorrelationHighlights(nextHighlights);
+      setError("");
+      onCorrelationGuideChange(
+        nextHighlights.length > 0 ? { highlights: nextHighlights, pairs } : null
+      );
+      onMeanPointChange(null);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Could not visualize correlation");
+      onCorrelationGuideChange(null);
+    }
+  };
+
   const pointerDown = (event: PointerEvent<HTMLElement>) => {
+    if (
+      !collapsed &&
+      (event.target as HTMLElement).closest("button, input, textarea, select, a")
+    ) {
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     collapsedDragMoved.current = false;
     setDrag({
@@ -125,6 +202,66 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
     setDrag(null);
   };
 
+  const resizePointerDown = (
+    direction: ResizeDirection,
+    event: PointerEvent<HTMLDivElement>
+  ) => {
+    event.stopPropagation();
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResize({
+      pointerId: event.pointerId,
+      direction,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: rect.x,
+      originY: rect.y,
+      originWidth: rect.width,
+      originHeight: rect.height,
+    });
+  };
+
+  const resizePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const dx = event.clientX - resize.startX;
+    const dy = event.clientY - resize.startY;
+    const fromLeft = resize.direction.includes("w");
+    const fromRight = resize.direction.includes("e");
+    const fromTop = resize.direction.includes("n");
+    const fromBottom = resize.direction.includes("s");
+    const minWidth = 220;
+    const minHeight = 300;
+    const maxWidth = fromLeft
+      ? resize.originX + resize.originWidth - 12
+      : window.innerWidth - resize.originX - 12;
+    const maxHeight = fromTop
+      ? resize.originY + resize.originHeight - 12
+      : window.innerHeight - resize.originY - 12;
+    const width = Math.min(
+      Math.max(minWidth, resize.originWidth + (fromLeft ? -dx : fromRight ? dx : 0)),
+      Math.max(minWidth, maxWidth)
+    );
+    const height = Math.min(
+      Math.max(minHeight, resize.originHeight + (fromTop ? -dy : fromBottom ? dy : 0)),
+      Math.max(minHeight, maxHeight)
+    );
+
+    setPosition({
+      x: fromLeft ? resize.originX + resize.originWidth - width : resize.originX,
+      y: fromTop ? resize.originY + resize.originHeight - height : resize.originY,
+    });
+    setSize({ width, height });
+  };
+
+  const resizePointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setResize(null);
+  };
+
   if (collapsed) {
     return (
       <button
@@ -151,15 +288,28 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
 
   return (
     <aside
-      className="scientific-calculator"
-      style={{ left: position.x, top: position.y }}
+      className={`scientific-calculator${compact ? " compact" : ""}`}
+      onPointerCancel={pointerUp}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerUp}
+      ref={panelRef}
+      style={{ height: size.height, left: position.x, top: position.y, width: size.width }}
     >
+      {RESIZE_DIRECTIONS.map((direction) => (
+        <div
+          aria-hidden="true"
+          className={`calculator-resize-handle ${direction}`}
+          key={direction}
+          onPointerCancel={resizePointerUp}
+          onPointerDown={(event) => resizePointerDown(direction, event)}
+          onPointerMove={resizePointerMove}
+          onPointerUp={resizePointerUp}
+        />
+      ))}
+      <div className="calculator-body">
       <div
         className="calculator-titlebar"
-        onPointerDown={pointerDown}
-        onPointerMove={pointerMove}
-        onPointerCancel={pointerUp}
-        onPointerUp={pointerUp}
       >
         <strong>Calculator</strong>
         <div className="calculator-title-actions">
@@ -184,8 +334,18 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
       <div className="calculator-display">
         <input
           aria-label="Calculator expression"
+          className={compact ? "calculator-detached-input" : ""}
           onChange={(event) => setExpression(event.target.value)}
           placeholder="2*sin(3.14) + 5"
+          style={
+            compact
+              ? {
+                  left: position.x,
+                  top: Math.max(8, position.y - 46),
+                  width: Math.max(CALCULATOR_DETACHED_INPUT_WIDTH, size.width),
+                }
+              : undefined
+          }
           value={expression}
         />
         <output>{result === null ? "ready" : result}</output>
@@ -203,10 +363,42 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
 
       <div className="calculator-key-grid stats">
         {STAT_KEYS.map((key) => (
-          <button key={key} onClick={() => runStatistic(key)} type="button">
+          <button
+            className={expression === key ? "active" : ""}
+            key={key}
+            onClick={() => runStatistic(key)}
+            type="button"
+          >
             {key}
           </button>
         ))}
+      </div>
+
+      <div className="correlation-panel">
+        <strong>Correlation coefficient</strong>
+        <code>
+          r = Σ[(xi - x̄)(yi - ȳ)] / √[Σ(xi - x̄)² Σ(yi - ȳ)²]
+        </code>
+        <output>
+          r = {correlationSummary?.coefficient ?? "needs varied x,y pairs"}
+        </output>
+        <div className="correlation-terms">
+          {CORRELATION_FORMULA_COMPONENTS.map((term) => (
+            <button
+              className={correlationHighlights.includes(term.id) ? "active" : ""}
+              key={term.id}
+              onClick={() => showCorrelationTerm(term.id)}
+              title={term.title}
+              type="button"
+            >
+              {term.label}
+            </button>
+          ))}
+        </div>
+        <div className="comovement-legend">
+          <span className="positive">Positive comovement</span>
+          <span className="negative">Negative comovement</span>
+        </div>
       </div>
 
       <div className="calculator-key-grid basic">
@@ -227,11 +419,15 @@ export const ScientificCalculator = ({ context, onGuideChange }: CalculatorProps
             setResult(null);
             setError("");
             onGuideChange(null);
+            onMeanPointChange(null);
+            onCorrelationGuideChange(null);
+            setCorrelationHighlights([]);
           }}
           type="button"
         >
           Clear
         </button>
+      </div>
       </div>
     </aside>
   );

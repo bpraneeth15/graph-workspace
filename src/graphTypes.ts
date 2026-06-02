@@ -139,4 +139,31 @@ export type ObjectTarget =
 export type CalculatorGuide = {
   label: string;
   value: number;
+  statistic?: "SD" | "VAR" | "COVAR" | "MEDIAN";
+  pairs?: DataValue[];
+};
+
+export type CalculatorMeanPoint = {
+  x: number;
+  y: number;
+  count: number;
+};
+
+export type CorrelationHighlight =
+  | "all"
+  | "mean"
+  | "mean-x"
+  | "mean-y"
+  | "horizontal"
+  | "vertical"
+  | "comovement"
+  | "positive-comovement"
+  | "negative-comovement"
+  | "x-spread"
+  | "y-spread"
+  | "denominator";
+
+export type CorrelationGuide = {
+  highlights: CorrelationHighlight[];
+  pairs: DataValue[];
 };
