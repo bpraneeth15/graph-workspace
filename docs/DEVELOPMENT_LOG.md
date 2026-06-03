@@ -42,7 +42,11 @@ This log records major product and engineering changes. Keep it updated whenever
 - Delayed calculator input detachment until the attached expression box has narrowed to its practical minimum, so the box resizes inside the panel before it pops above the compact calculator.
 - Preserved cyan horizontal deviations and pink vertical deviations while highlighting correlation comovement rectangles, keeping each component visually distinguishable.
 - Added positive-only and negative-only comovement selections with distinct green and orange rectangle colors plus a calculator legend.
+- Replaced the always-visible correlation block with an on-demand statistics formula panel. Mean, SD, variance, covariance, median, and correlation now each open their own formula view from the calculator row.
 - Added a correlation formula registry and component tree. Correlation layers can now be toggled together, x̄ and ȳ have separate controls, horizontal and vertical spread render literal labeled squares with totals, and signed comovement rectangles include numeric labels and total raw comovement.
+- Added selectable formula components for mean, standard deviation, variance, covariance, and median. Each selected term now highlights its corresponding lines, deviations, literal square areas, bands, or signed rectangles directly on the grid.
+- Corrected standard-deviation visualization so √VAR displays x/y distance brackets from the mean instead of filled variance-area boxes. Horizontal deviations now render as horizontal distances and horizontal-deviation squares.
+- Reused the distance-marker renderer for statistic and covariance deviation formula parts, so generated deviation lines now use the same dotted segment, end-cap, and distance-label visual language as the Distance tool.
 
 ## Earlier Milestones
 

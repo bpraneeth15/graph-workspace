@@ -139,7 +139,8 @@ export type ObjectTarget =
 export type CalculatorGuide = {
   label: string;
   value: number;
-  statistic?: "SD" | "VAR" | "COVAR" | "MEDIAN";
+  statistic?: "MEAN" | "SD" | "VAR" | "COVAR" | "MEDIAN";
+  highlights?: StatisticHighlight[];
   pairs?: DataValue[];
 };
 
@@ -167,3 +168,36 @@ export type CorrelationGuide = {
   highlights: CorrelationHighlight[];
   pairs: DataValue[];
 };
+
+export type StatisticHighlight =
+  | "mean-point"
+  | "mean-x"
+  | "mean-y"
+  | "sd-center"
+  | "sd-y-deviations"
+  | "sd-y-squares"
+  | "sd-y-sum"
+  | "sd-y-average"
+  | "sd-y-length"
+  | "sd-x-deviations"
+  | "sd-x-squares"
+  | "sd-x-sum"
+  | "sd-x-average"
+  | "sd-x-length"
+  | "variance-center"
+  | "variance-y-deviations"
+  | "variance-y-squares"
+  | "variance-y-sum"
+  | "variance-y-average"
+  | "variance-x-deviations"
+  | "variance-x-squares"
+  | "variance-x-sum"
+  | "variance-x-average"
+  | "covariance-means"
+  | "covariance-horizontal"
+  | "covariance-vertical"
+  | "covariance-products"
+  | "covariance-average"
+  | "median-point"
+  | "median-x"
+  | "median-y";

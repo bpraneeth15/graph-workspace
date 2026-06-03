@@ -1920,7 +1920,7 @@ button:disabled {
 }
 
 .calculator-key-grid.stats {
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
 }
 
 .calculator-key-grid.basic {
@@ -1978,6 +1978,27 @@ button:disabled {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   font-weight: 800;
+}
+
+.formula-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.formula-panel-title button {
+  width: 22px;
+  min-height: 20px;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.statistic-formula-panel small {
+  color: #aab3bf;
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .correlation-terms {

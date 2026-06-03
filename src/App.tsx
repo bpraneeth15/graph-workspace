@@ -57,6 +57,7 @@ import type {
   SurfaceStroke,
   SurfaceTool,
   SurfaceVector3,
+  StatisticHighlight,
   Tool,
   ViewState,
   WorkspaceMode,
@@ -6060,43 +6061,10 @@ const drawGraph = (
     const isSelected =
       isSelectedObject(graph.selectedObject, "measure", measure.id) ||
       isGraphGroupTargetSelected(graph.lockedGroupTargets, { kind: "measure", id: measure.id });
-    const start = toScreen(measure.a);
-    const end = toScreen(measure.b);
-
-    if (isSelected) {
-      context.save();
-      context.strokeStyle = "rgba(36, 33, 30, 0.28)";
-      context.lineWidth = 7;
-      context.setLineDash([10, 7]);
-      context.beginPath();
-      context.moveTo(start.x, start.y);
-      context.lineTo(end.x, end.y);
-      context.stroke();
-      context.restore();
-    }
-
-    context.save();
-    context.strokeStyle = measure.color;
-    context.lineWidth = 2.5;
-    context.setLineDash([7, 7]);
-    context.beginPath();
-    context.moveTo(start.x, start.y);
-    context.lineTo(end.x, end.y);
-    context.stroke();
-    context.restore();
-
-    const measureAngle = Math.atan2(end.y - start.y, end.x - start.x);
-    [measure.a, measure.b].forEach((point, handleIndex) => {
-      const screenPoint = toScreen(point);
-      drawDimensionCap(context, screenPoint, measureAngle, measure.color);
-      if (measure.showEndpointLabels ?? true) {
-        context.fillStyle = "#24211e";
-        context.fillText(
-          `D${index + 1}.${handleIndex + 1}`,
-          screenPoint.x + 9,
-          screenPoint.y - 18
-        );
-      }
+    drawDistanceMeasureLine(context, measure, toScreen, {
+      index,
+      isSelected,
+      showEndpointLabels: measure.showEndpointLabels ?? true,
     });
   });
 
@@ -6401,8 +6369,14 @@ const drawCalculatorStatisticGuide = (
   const meanX = getAverage(pairs.map((pair) => pair.x));
   const meanY = getAverage(pairs.map((pair) => pair.y));
   const meanScreen = toScreen({ id: 0, x: meanX, y: meanY });
+  const highlights = new Set<StatisticHighlight>(guide.highlights ?? []);
+  const showAll = highlights.size === 0;
+  const has = (...values: StatisticHighlight[]) =>
+    showAll || values.some((value) => highlights.has(value));
   const accent =
-    guide.statistic === "SD"
+    guide.statistic === "MEAN"
+      ? "#39ff14"
+      : guide.statistic === "SD"
       ? "#2f80ed"
       : guide.statistic === "VAR"
         ? "#9b51e0"
@@ -6436,81 +6410,356 @@ const drawCalculatorStatisticGuide = (
     context.stroke();
     context.restore();
   };
+  const drawVerticalDeviations = (color = accent) => {
+    pairs.forEach((pair, index) => {
+      const deviation = pair.y - meanY;
+      if (Math.abs(deviation) < 0.000001) return;
+      drawDistanceMeasureLine(
+        context,
+        {
+          id: index,
+          a: { id: 0, x: pair.x, y: meanY },
+          b: { id: 0, x: pair.x, y: pair.y },
+          color,
+          label: `|yi - ȳ| = ${formatNumber(Math.abs(deviation))}`,
+          showEndpointLabels: false,
+          showLabel: true,
+        },
+        toScreen,
+        { drawInlineLabel: true, showEndpointLabels: false }
+      );
+    });
+  };
+  const drawHorizontalDeviations = (color = accent) => {
+    pairs.forEach((pair, index) => {
+      const deviation = pair.x - meanX;
+      if (Math.abs(deviation) < 0.000001) return;
+      drawDistanceMeasureLine(
+        context,
+        {
+          id: index,
+          a: { id: 0, x: meanX, y: pair.y },
+          b: { id: 0, x: pair.x, y: pair.y },
+          color,
+          label: `|xi - x̄| = ${formatNumber(Math.abs(deviation))}`,
+          showEndpointLabels: false,
+          showLabel: true,
+        },
+        toScreen,
+        { drawInlineLabel: true, showEndpointLabels: false }
+      );
+    });
+  };
+  const drawVerticalDeviationSquares = (color: string, fill: string) => {
+    let total = 0;
+    pairs.forEach((pair, index) => {
+      const deviation = pair.y - meanY;
+      const side = Math.abs(deviation);
+      if (side < 0.000001) return;
+      total += deviation ** 2;
+      const direction = index % 2 === 0 ? 1 : -1;
+      const a = toScreen({ id: 0, x: pair.x, y: meanY });
+      const b = toScreen({ id: 0, x: pair.x + side * direction, y: pair.y });
+      context.fillStyle = fill;
+      context.strokeStyle = color;
+      context.lineWidth = 1.5;
+      context.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.fillStyle = color;
+      context.font = "700 11px Inter, system-ui, sans-serif";
+      context.fillText(formatNumber(deviation ** 2), (a.x + b.x) / 2 + 4, (a.y + b.y) / 2);
+    });
+    drawStatisticLabel(context, `Σ vertical squares = ${formatNumber(total)}`, 12, height - 36, color, width, height);
+  };
+  const drawHorizontalDeviationSquares = (color: string, fill: string) => {
+    let total = 0;
+    pairs.forEach((pair, index) => {
+      const deviation = pair.x - meanX;
+      const side = Math.abs(deviation);
+      if (side < 0.000001) return;
+      total += deviation ** 2;
+      const direction = index % 2 === 0 ? 1 : -1;
+      const a = toScreen({ id: 0, x: meanX, y: pair.y });
+      const b = toScreen({ id: 0, x: pair.x, y: pair.y + side * direction });
+      context.fillStyle = fill;
+      context.strokeStyle = color;
+      context.lineWidth = 1.5;
+      context.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      context.fillStyle = color;
+      context.font = "700 11px Inter, system-ui, sans-serif";
+      context.fillText(formatNumber(deviation ** 2), (a.x + b.x) / 2 + 4, (a.y + b.y) / 2);
+    });
+    drawStatisticLabel(context, `Σ horizontal squares = ${formatNumber(total)}`, 12, height - 64, color, width, height);
+  };
+  const drawAverageVarianceSquare = (
+    axis: "x" | "y",
+    side: number,
+    variance: number,
+    color: string,
+    fill: string
+  ) => {
+    if (side < 0.000001) return;
+    const verticalDirection = axis === "y" ? 1 : -1;
+    const a = toScreen({ id: 0, x: meanX, y: meanY });
+    const b = toScreen({ id: 0, x: meanX + side, y: meanY + side * verticalDirection });
+    context.fillStyle = fill;
+    context.strokeStyle = color;
+    context.lineWidth = 2;
+    context.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    context.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    drawStatisticLabel(
+      context,
+      `VAR_${axis} avg area = ${formatNumber(variance)}`,
+      (a.x + b.x) / 2 + 8,
+      (a.y + b.y) / 2 - 12,
+      color,
+      width,
+      height
+    );
+  };
+  const drawVerticalSdBracket = (sdY: number) => {
+    if (sdY < 0.000001) return;
+    const bracketColor = "#39ff14";
+    const upperY = meanY + sdY;
+    const lowerY = meanY - sdY;
+    drawHorizontal(meanY, [8, 6], 0.9);
+    drawHorizontal(upperY, [4, 5], 0.72);
+    drawHorizontal(lowerY, [4, 5], 0.72);
+    const x = clamp(meanScreen.x + 46, 28, width - 28);
+    const mean = toScreen({ id: 0, x: meanX, y: meanY }).y;
+    const upper = toScreen({ id: 0, x: meanX, y: upperY }).y;
+    const lower = toScreen({ id: 0, x: meanX, y: lowerY }).y;
+    context.save();
+    context.strokeStyle = bracketColor;
+    context.fillStyle = bracketColor;
+    context.shadowColor = bracketColor;
+    context.shadowBlur = 10;
+    context.lineWidth = 3;
+    [[mean, upper], [mean, lower]].forEach(([a, b]) => {
+      context.beginPath();
+      context.moveTo(x, a);
+      context.lineTo(x, b);
+      context.moveTo(x - 7, a);
+      context.lineTo(x + 7, a);
+      context.moveTo(x - 7, b);
+      context.lineTo(x + 7, b);
+      context.stroke();
+    });
+    context.font = "800 12px Inter, system-ui, sans-serif";
+    context.fillText("ȳ + SD_y", x + 10, upper - 4);
+    context.fillText("ȳ - SD_y", x + 10, lower + 14);
+    context.restore();
+    drawStatisticLabel(context, `1 SD_y = ${formatNumber(sdY)}`, x + 12, (mean + upper) / 2 - 12, bracketColor, width, height);
+  };
+  const drawHorizontalSdBracket = (sdX: number) => {
+    if (sdX < 0.000001) return;
+    const bracketColor = "#ff2bd6";
+    const rightX = meanX + sdX;
+    const leftX = meanX - sdX;
+    drawVertical(meanX, [8, 6], 0.9);
+    drawVertical(rightX, [4, 5], 0.72);
+    drawVertical(leftX, [4, 5], 0.72);
+    const y = clamp(meanScreen.y - 46, 28, height - 28);
+    const mean = toScreen({ id: 0, x: meanX, y: meanY }).x;
+    const right = toScreen({ id: 0, x: rightX, y: meanY }).x;
+    const left = toScreen({ id: 0, x: leftX, y: meanY }).x;
+    context.save();
+    context.strokeStyle = bracketColor;
+    context.fillStyle = bracketColor;
+    context.shadowColor = bracketColor;
+    context.shadowBlur = 10;
+    context.lineWidth = 3;
+    [[mean, right], [mean, left]].forEach(([a, b]) => {
+      context.beginPath();
+      context.moveTo(a, y);
+      context.lineTo(b, y);
+      context.moveTo(a, y - 7);
+      context.lineTo(a, y + 7);
+      context.moveTo(b, y - 7);
+      context.lineTo(b, y + 7);
+      context.stroke();
+    });
+    context.font = "800 12px Inter, system-ui, sans-serif";
+    context.fillText("x̄ + SD_x", right + 6, y - 10);
+    context.fillText("x̄ - SD_x", left + 6, y - 10);
+    context.restore();
+    drawStatisticLabel(context, `1 SD_x = ${formatNumber(sdX)}`, (mean + right) / 2 + 8, y + 10, bracketColor, width, height);
+  };
 
   context.save();
+  if (guide.statistic === "MEAN") {
+    if (has("mean-point", "mean-y")) drawHorizontal(meanY);
+    if (has("mean-point", "mean-x")) drawVertical(meanX);
+    if (has("mean-point")) drawStatisticMarker(context, meanScreen, accent);
+    drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+  }
+
   if (guide.statistic === "MEDIAN") {
     const medianX = getMedian(pairs.map((pair) => pair.x));
     const medianY = getMedian(pairs.map((pair) => pair.y));
     const medianScreen = toScreen({ id: 0, x: medianX, y: medianY });
-    drawHorizontal(medianY);
-    drawVertical(medianX);
-    drawStatisticMarker(context, medianScreen, accent);
+    if (has("median-point", "median-y")) drawHorizontal(medianY);
+    if (has("median-point", "median-x")) drawVertical(medianX);
+    if (has("median-point")) drawStatisticMarker(context, medianScreen, accent);
     drawStatisticLabel(context, guide.label, medianScreen.x + 14, medianScreen.y - 28, accent, width, height);
   }
 
   if (guide.statistic === "SD") {
     const sdX = Math.sqrt(getVariance(pairs.map((pair) => pair.x)));
     const sdY = Math.sqrt(getVariance(pairs.map((pair) => pair.y)));
-    const topLeft = toScreen({ id: 0, x: meanX - sdX, y: meanY + sdY });
-    const bottomRight = toScreen({ id: 0, x: meanX + sdX, y: meanY - sdY });
-    context.fillStyle = "rgba(47, 128, 237, 0.1)";
-    context.strokeStyle = "rgba(47, 128, 237, 0.56)";
-    context.lineWidth = 1.5;
-    context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
-    context.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
-    drawHorizontal(meanY);
-    drawVertical(meanX);
-    drawHorizontal(meanY - sdY, [4, 5], 0.6);
-    drawHorizontal(meanY + sdY, [4, 5], 0.6);
-    drawVertical(meanX - sdX, [4, 5], 0.6);
-    drawVertical(meanX + sdX, [4, 5], 0.6);
+    const varX = sdX ** 2;
+    const varY = sdY ** 2;
+    if (
+      has(
+        "sd-center",
+        "sd-y-deviations",
+        "sd-y-squares",
+        "sd-y-sum",
+        "sd-y-average",
+        "sd-y-length"
+      )
+    ) {
+      drawHorizontal(meanY);
+    }
+    if (
+      has(
+        "sd-center",
+        "sd-x-deviations",
+        "sd-x-squares",
+        "sd-x-sum",
+        "sd-x-average",
+        "sd-x-length"
+      )
+    ) {
+      drawVertical(meanX);
+    }
+    if (has("sd-y-deviations")) drawVerticalDeviations("#2f80ed");
+    if (has("sd-x-deviations")) drawHorizontalDeviations("#0ea5e9");
+    if (has("sd-y-squares", "sd-y-sum")) {
+      drawVerticalDeviationSquares("#2f80ed", "rgba(47, 128, 237, 0.11)");
+    }
+    if (has("sd-x-squares", "sd-x-sum")) {
+      drawHorizontalDeviationSquares("#0ea5e9", "rgba(14, 165, 233, 0.11)");
+    }
+    if (has("sd-y-average")) drawAverageVarianceSquare("y", sdY, varY, "#2f80ed", "rgba(47, 128, 237, 0.09)");
+    if (has("sd-x-average")) drawAverageVarianceSquare("x", sdX, varX, "#0ea5e9", "rgba(14, 165, 233, 0.09)");
+    if (has("sd-y-length")) drawVerticalSdBracket(sdY);
+    if (has("sd-x-length")) drawHorizontalSdBracket(sdX);
     drawStatisticMarker(context, meanScreen, accent);
-    drawStatisticLabel(context, `${guide.label}; x SD = ${formatNumber(sdX)}`, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+    drawStatisticLabel(context, `${guide.label}; SD_x = ${formatNumber(sdX)}, SD_y = ${formatNumber(sdY)}`, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
   }
 
   if (guide.statistic === "VAR") {
-    drawHorizontal(meanY);
-    pairs.forEach((pair, index) => {
-      const deviation = pair.y - meanY;
-      const side = Math.abs(deviation);
-      if (side < 0.000001) return;
-      const direction = index % 2 === 0 ? 1 : -1;
-      const a = toScreen({ id: 0, x: pair.x, y: meanY });
-      const b = toScreen({ id: 0, x: pair.x + side * direction, y: pair.y });
-      context.fillStyle = "rgba(155, 81, 224, 0.11)";
-      context.strokeStyle = "rgba(155, 81, 224, 0.78)";
-      context.lineWidth = 1.5;
-      context.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-      context.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-      context.fillStyle = "#6f2da8";
-      context.font = "700 11px Inter, system-ui, sans-serif";
-      context.fillText(formatNumber(deviation ** 2), (a.x + b.x) / 2 + 4, (a.y + b.y) / 2);
-    });
+    const varX = getVariance(pairs.map((pair) => pair.x));
+    const varY = getVariance(pairs.map((pair) => pair.y));
+    const sdX = Math.sqrt(varX);
+    const sdY = Math.sqrt(varY);
+    if (
+      has(
+        "variance-center",
+        "variance-y-deviations",
+        "variance-y-squares",
+        "variance-y-sum",
+        "variance-y-average"
+      )
+    ) {
+      drawHorizontal(meanY);
+    }
+    if (
+      has(
+        "variance-center",
+        "variance-x-deviations",
+        "variance-x-squares",
+        "variance-x-sum",
+        "variance-x-average"
+      )
+    ) {
+      drawVertical(meanX);
+    }
+    if (has("variance-y-deviations")) drawVerticalDeviations("#9b51e0");
+    if (has("variance-x-deviations")) drawHorizontalDeviations("#0ea5e9");
+    if (has("variance-y-squares", "variance-y-sum")) {
+      drawVerticalDeviationSquares("#6f2da8", "rgba(155, 81, 224, 0.11)");
+    }
+    if (has("variance-x-squares", "variance-x-sum")) {
+      drawHorizontalDeviationSquares("#0ea5e9", "rgba(14, 165, 233, 0.11)");
+    }
+    if (has("variance-y-average")) {
+      drawAverageVarianceSquare("y", sdY, varY, "#6f2da8", "rgba(155, 81, 224, 0.1)");
+    }
+    if (has("variance-x-average")) {
+      drawAverageVarianceSquare("x", sdX, varX, "#0ea5e9", "rgba(14, 165, 233, 0.1)");
+    }
     drawStatisticMarker(context, meanScreen, accent);
-    drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+    drawStatisticLabel(context, `${guide.label}; VAR_x = ${formatNumber(varX)}, VAR_y = ${formatNumber(varY)}`, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
   }
 
   if (guide.statistic === "COVAR") {
-    drawHorizontal(meanY);
-    drawVertical(meanX);
+    if (
+      has(
+        "covariance-means",
+        "covariance-horizontal",
+        "covariance-vertical",
+        "covariance-products",
+        "covariance-average"
+      )
+    ) {
+      drawHorizontal(meanY);
+      drawVertical(meanX);
+    }
     pairs.forEach((pair) => {
       const screen = toScreen({ id: 0, x: pair.x, y: pair.y });
       const product = (pair.x - meanX) * (pair.y - meanY);
-      context.fillStyle = product >= 0 ? "rgba(242, 153, 74, 0.18)" : "rgba(235, 87, 87, 0.16)";
-      context.strokeStyle = product >= 0 ? "#f2994a" : "#eb5757";
-      context.lineWidth = 1.5;
-      context.fillRect(
-        Math.min(meanScreen.x, screen.x),
-        Math.min(meanScreen.y, screen.y),
-        Math.abs(screen.x - meanScreen.x),
-        Math.abs(screen.y - meanScreen.y)
-      );
-      context.strokeRect(
-        Math.min(meanScreen.x, screen.x),
-        Math.min(meanScreen.y, screen.y),
-        Math.abs(screen.x - meanScreen.x),
-        Math.abs(screen.y - meanScreen.y)
-      );
+      if (has("covariance-horizontal", "covariance-products", "covariance-average")) {
+        drawDistanceMeasureLine(
+          context,
+          {
+            id: pair.x * 1000 + pair.y,
+            a: { id: 0, x: meanX, y: pair.y },
+            b: { id: 0, x: pair.x, y: pair.y },
+            color: "#29b6f6",
+            label: `|xi - x̄| = ${formatNumber(Math.abs(pair.x - meanX))}`,
+            showEndpointLabels: false,
+            showLabel: true,
+          },
+          toScreen,
+          { drawInlineLabel: has("covariance-horizontal"), showEndpointLabels: false }
+        );
+      }
+      if (has("covariance-vertical", "covariance-products", "covariance-average")) {
+        drawDistanceMeasureLine(
+          context,
+          {
+            id: pair.x * 1000 + pair.y,
+            a: { id: 0, x: pair.x, y: meanY },
+            b: { id: 0, x: pair.x, y: pair.y },
+            color: "#ec407a",
+            label: `|yi - ȳ| = ${formatNumber(Math.abs(pair.y - meanY))}`,
+            showEndpointLabels: false,
+            showLabel: true,
+          },
+          toScreen,
+          { drawInlineLabel: has("covariance-vertical"), showEndpointLabels: false }
+        );
+      }
+      if (has("covariance-products", "covariance-average")) {
+        context.fillStyle = product >= 0 ? "rgba(242, 153, 74, 0.18)" : "rgba(235, 87, 87, 0.16)";
+        context.strokeStyle = product >= 0 ? "#f2994a" : "#eb5757";
+        context.lineWidth = 1.5;
+        context.fillRect(
+          Math.min(meanScreen.x, screen.x),
+          Math.min(meanScreen.y, screen.y),
+          Math.abs(screen.x - meanScreen.x),
+          Math.abs(screen.y - meanScreen.y)
+        );
+        context.strokeRect(
+          Math.min(meanScreen.x, screen.x),
+          Math.min(meanScreen.y, screen.y),
+          Math.abs(screen.x - meanScreen.x),
+          Math.abs(screen.y - meanScreen.y)
+        );
+      }
     });
     drawStatisticMarker(context, meanScreen, accent);
     drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
@@ -7122,6 +7371,80 @@ const isSelectedObject = (
   kind: ObjectTarget["kind"],
   id: number
 ) => selected?.kind === kind && selected.id === id;
+
+const drawDistanceMeasureLine = (
+  context: CanvasRenderingContext2D,
+  measure: GraphMeasure,
+  toScreen: (point: GraphPoint) => { x: number; y: number },
+  options: {
+    drawInlineLabel?: boolean;
+    index?: number;
+    isSelected?: boolean;
+    showEndpointLabels?: boolean;
+  } = {}
+) => {
+  const start = toScreen(measure.a);
+  const end = toScreen(measure.b);
+
+  if (options.isSelected) {
+    context.save();
+    context.strokeStyle = "rgba(36, 33, 30, 0.28)";
+    context.lineWidth = 7;
+    context.setLineDash([10, 7]);
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+    context.restore();
+  }
+
+  context.save();
+  context.strokeStyle = measure.color;
+  context.lineWidth = 2.5;
+  context.setLineDash([7, 7]);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+  context.restore();
+
+  const measureAngle = Math.atan2(end.y - start.y, end.x - start.x);
+  [measure.a, measure.b].forEach((point, handleIndex) => {
+    const screenPoint = toScreen(point);
+    drawDimensionCap(context, screenPoint, measureAngle, measure.color);
+    if (options.showEndpointLabels) {
+      context.fillStyle = "#24211e";
+      context.fillText(
+        `D${(options.index ?? 0) + 1}.${handleIndex + 1}`,
+        screenPoint.x + 9,
+        screenPoint.y - 18
+      );
+    }
+  });
+
+  if (options.drawInlineLabel && measure.showLabel !== false) {
+    const label = measure.label?.trim() || formatMeasureLabel(measure);
+    const midpoint = {
+      x: start.x + (end.x - start.x) * (measure.labelT ?? 0.5),
+      y: start.y + (end.y - start.y) * (measure.labelT ?? 0.5),
+    };
+    context.save();
+    context.font = "700 10px Inter, system-ui, sans-serif";
+    const labelWidth = context.measureText(label).width + 12;
+    const labelHeight = 18;
+    const x = midpoint.x + 8;
+    const y = midpoint.y - labelHeight - 6;
+    context.fillStyle = "rgba(255, 255, 255, 0.94)";
+    context.strokeStyle = measure.color;
+    context.lineWidth = 1.4;
+    roundRect(context, x, y, labelWidth, labelHeight, 5);
+    context.fill();
+    context.stroke();
+    context.fillStyle = measure.color;
+    context.fillText(label, x + 6, y + 4);
+    context.restore();
+  }
+};
 
 const drawDimensionCap = (
   context: CanvasRenderingContext2D,

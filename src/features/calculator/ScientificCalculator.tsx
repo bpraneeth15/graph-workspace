@@ -5,16 +5,17 @@ import {
   getCalculatorPairs,
   getCalculatorValues,
   getCorrelationSummary,
-  getMeanPoint,
   getSelectedObjectSummary,
   type CalculatorDataContext,
 } from "./calculator";
 import { CORRELATION_FORMULA_COMPONENTS } from "../formulaVisualization/correlationFormula";
+import { STATISTIC_FORMULA_COMPONENTS } from "../formulaVisualization/statisticFormula";
 import type {
   CalculatorGuide,
   CalculatorMeanPoint,
   CorrelationGuide,
   CorrelationHighlight,
+  StatisticHighlight,
 } from "../../graphTypes";
 
 type CalculatorProps = {
@@ -27,6 +28,37 @@ type CalculatorProps = {
 const SCIENCE_KEYS = ["sin(", "cos(", "tan(", "sqrt(", "log10(", "log(", "π", "e", "^", "(", ")"];
 const BASIC_KEYS = ["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "=", "+"];
 const STAT_KEYS = ["MEAN", "SD", "VAR", "COVAR", "MEDIAN"] as const;
+type FormulaPanel = (typeof STAT_KEYS)[number] | "r";
+const STATISTIC_FORMULAS: Record<
+  (typeof STAT_KEYS)[number],
+  { title: string; formula: string; explanation: string }
+> = {
+  MEAN: {
+    title: "Mean",
+    formula: "x̄ = Σxi / n, ȳ = Σyi / n",
+    explanation: "The mean point is the center of the selected coordinates.",
+  },
+  SD: {
+    title: "Standard deviation",
+    formula: "SD_y = √[Σ(yi - ȳ)² / n], SD_x = √[Σ(xi - x̄)² / n]",
+    explanation: "Standard deviation is the normal distance obtained after square-rooting an average squared deviation.",
+  },
+  VAR: {
+    title: "Variance",
+    formula: "VAR_y = Σ(yi - ȳ)² / n, VAR_x = Σ(xi - x̄)² / n",
+    explanation: "Variance is average squared spread; y terms are vertical and x terms are horizontal.",
+  },
+  COVAR: {
+    title: "Covariance",
+    formula: "COVAR = Σ[(xi - x̄)(yi - ȳ)] / n",
+    explanation: "Covariance averages the signed horizontal and vertical comovement.",
+  },
+  MEDIAN: {
+    title: "Median",
+    formula: "MEDIAN = middle(sorted values)",
+    explanation: "The median is the middle value after sorting the selected values.",
+  },
+};
 const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
 const CALCULATOR_INPUT_DETACH_WIDTH = 270;
 const CALCULATOR_DETACHED_INPUT_WIDTH = 326;
@@ -44,6 +76,8 @@ export const ScientificCalculator = ({
   const [collapsed, setCollapsed] = useState(false);
   const [correlationHighlights, setCorrelationHighlights] =
     useState<CorrelationHighlight[]>([]);
+  const [statisticHighlights, setStatisticHighlights] = useState<StatisticHighlight[]>([]);
+  const [formulaPanel, setFormulaPanel] = useState<FormulaPanel | null>(null);
   const [position, setPosition] = useState({ x: 380, y: 84 });
   const [size, setSize] = useState<{ width: number; height?: number }>({ width: 340 });
   const [drag, setDrag] = useState<{
@@ -117,19 +151,60 @@ export const ScientificCalculator = ({
     try {
       const value = calculateStatistic(name, context);
       const pairs = getCalculatorPairs(context);
+      setFormulaPanel(name);
       setExpression(name);
       setResult(value);
       setError("");
+      setCorrelationHighlights([]);
+      setStatisticHighlights([]);
       onCorrelationGuideChange(null);
-      if (name === "MEAN") {
-        onGuideChange(null);
-        onMeanPointChange(getMeanPoint(context));
-      } else {
-        onMeanPointChange(null);
-        onGuideChange({ label: `${name} = ${value}`, value, statistic: name, pairs });
-      }
+      onMeanPointChange(null);
+      onGuideChange({ highlights: [], label: `${name} = ${value}`, pairs, statistic: name, value });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not calculate");
+      onGuideChange(null);
+    }
+  };
+
+  const showCorrelationPanel = () => {
+    setFormulaPanel("r");
+    setStatisticHighlights([]);
+    setError("");
+    onGuideChange(null);
+    onMeanPointChange(null);
+  };
+
+  const showStatisticTerm = (
+    statistic: (typeof STAT_KEYS)[number],
+    highlight: StatisticHighlight
+  ) => {
+    try {
+      const pairs = getCalculatorPairs(context);
+      if (pairs.length === 0) {
+        throw new Error(`${statistic} needs at least one x,y pair.`);
+      }
+      const value = calculateStatistic(statistic, context);
+      const nextHighlights = statisticHighlights.includes(highlight)
+        ? statisticHighlights.filter((current) => current !== highlight)
+        : [...statisticHighlights, highlight];
+      setStatisticHighlights(nextHighlights);
+      setCorrelationHighlights([]);
+      setError("");
+      onCorrelationGuideChange(null);
+      onMeanPointChange(null);
+      onGuideChange(
+        nextHighlights.length > 0
+          ? {
+              highlights: nextHighlights,
+              label: `${statistic} = ${value}`,
+              pairs,
+              statistic,
+              value,
+            }
+          : null
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : `Could not visualize ${statistic}`);
       onGuideChange(null);
     }
   };
@@ -364,7 +439,7 @@ export const ScientificCalculator = ({
       <div className="calculator-key-grid stats">
         {STAT_KEYS.map((key) => (
           <button
-            className={expression === key ? "active" : ""}
+            className={formulaPanel === key ? "active" : ""}
             key={key}
             onClick={() => runStatistic(key)}
             type="button"
@@ -372,34 +447,86 @@ export const ScientificCalculator = ({
             {key}
           </button>
         ))}
+        <button
+          className={formulaPanel === "r" ? "active" : ""}
+          onClick={showCorrelationPanel}
+          type="button"
+        >
+          r
+        </button>
       </div>
 
-      <div className="correlation-panel">
-        <strong>Correlation coefficient</strong>
-        <code>
-          r = Σ[(xi - x̄)(yi - ȳ)] / √[Σ(xi - x̄)² Σ(yi - ȳ)²]
-        </code>
-        <output>
-          r = {correlationSummary?.coefficient ?? "needs varied x,y pairs"}
-        </output>
-        <div className="correlation-terms">
-          {CORRELATION_FORMULA_COMPONENTS.map((term) => (
+      {formulaPanel ? (
+        <div className="correlation-panel statistic-formula-panel">
+          <div className="formula-panel-title">
+            <strong>
+              {formulaPanel === "r"
+                ? "Correlation coefficient"
+                : STATISTIC_FORMULAS[formulaPanel].title}
+            </strong>
             <button
-              className={correlationHighlights.includes(term.id) ? "active" : ""}
-              key={term.id}
-              onClick={() => showCorrelationTerm(term.id)}
-              title={term.title}
+              aria-label="Hide formula"
+              onClick={() => setFormulaPanel(null)}
               type="button"
             >
-              {term.label}
+              x
             </button>
-          ))}
+          </div>
+          <code>
+            {formulaPanel === "r"
+              ? "r = Σ[(xi - x̄)(yi - ȳ)] / √[Σ(xi - x̄)² Σ(yi - ȳ)²]"
+              : STATISTIC_FORMULAS[formulaPanel].formula}
+          </code>
+          <output>
+            {formulaPanel === "r"
+              ? `r = ${correlationSummary?.coefficient ?? "needs varied x,y pairs"}`
+              : `${formulaPanel} = ${result ?? "needs points or data"}`}
+          </output>
+          {formulaPanel === "r" ? (
+            <>
+              <div className="correlation-terms">
+                {CORRELATION_FORMULA_COMPONENTS.map((term) => (
+                  <button
+                    className={correlationHighlights.includes(term.id) ? "active" : ""}
+                    key={term.id}
+                    onClick={() => showCorrelationTerm(term.id)}
+                    title={term.title}
+                    type="button"
+                  >
+                    {term.label}
+                  </button>
+                ))}
+              </div>
+              <div className="comovement-legend">
+                <span className="positive">Positive comovement</span>
+                <span className="negative">Negative comovement</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="correlation-terms statistic-formula-terms">
+                {STATISTIC_FORMULA_COMPONENTS[formulaPanel].map((term) => (
+                  <button
+                    className={statisticHighlights.includes(term.id) ? "active" : ""}
+                    key={term.id}
+                    onClick={() => showStatisticTerm(formulaPanel, term.id)}
+                    title={term.title}
+                    type="button"
+                  >
+                    {term.label}
+                  </button>
+                ))}
+              </div>
+              <small>
+                {STATISTIC_FORMULA_COMPONENTS[formulaPanel]
+                  .filter((term) => statisticHighlights.includes(term.id))
+                  .map((term) => term.explanation)
+                  .join(" ") || STATISTIC_FORMULAS[formulaPanel].explanation}
+              </small>
+            </>
+          )}
         </div>
-        <div className="comovement-legend">
-          <span className="positive">Positive comovement</span>
-          <span className="negative">Negative comovement</span>
-        </div>
-      </div>
+      ) : null}
 
       <div className="calculator-key-grid basic">
         {BASIC_KEYS.map((key) => (
@@ -422,6 +549,8 @@ export const ScientificCalculator = ({
             onMeanPointChange(null);
             onCorrelationGuideChange(null);
             setCorrelationHighlights([]);
+            setStatisticHighlights([]);
+            setFormulaPanel(null);
           }}
           type="button"
         >
