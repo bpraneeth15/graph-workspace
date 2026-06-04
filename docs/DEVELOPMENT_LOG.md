@@ -2,6 +2,20 @@
 
 This log records major product and engineering changes. Keep it updated whenever a meaningful feature, refactor, or behavior change lands.
 
+## 2026-06-04
+
+### Fixed
+
+- Fixed a startup render loop in the 2D graph canvas by separating canvas size observation from graph drawing.
+- Rounded measured canvas dimensions before writing them to React state, preventing sub-pixel resize jitter from repeatedly retriggering renders.
+- Expanded Delete-key handling to include formula-driven objects in every tool mode.
+
+### Added
+
+- Replaced the simple Equations list with expandable formula-variable cards for coordinate objects.
+- Added formula-object creation for square, rectangle, circle, triangle, right triangle, ellipse, line, parabola, sine, cosine, exponential, logarithmic, and absolute-value objects.
+- Added analog sliders, numeric inputs, computed values, color controls, label toggles, and delete actions to formula cards.
+
 ## 2026-05-28
 
 ### Added

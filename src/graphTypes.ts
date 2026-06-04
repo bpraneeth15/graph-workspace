@@ -102,6 +102,42 @@ export type GraphShape = {
   referenceSide?: 1 | -1;
 };
 
+export type FormulaObjectKind =
+  | "square"
+  | "rectangle"
+  | "circle"
+  | "triangle"
+  | "right-triangle"
+  | "ellipse"
+  | "line"
+  | "parabola"
+  | "sine"
+  | "cosine"
+  | "exponential"
+  | "logarithmic"
+  | "absolute";
+
+export type FormulaVariable = {
+  key: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+};
+
+export type GraphFormulaObject = {
+  id: number;
+  kind: FormulaObjectKind;
+  name: string;
+  formula: string;
+  variables: FormulaVariable[];
+  anchor: GraphPoint;
+  rotation?: number;
+  color: string;
+  showLabel?: boolean;
+};
+
 export type GraphMeasure = {
   id: number;
   a: GraphPoint;
@@ -134,7 +170,8 @@ export type ObjectTarget =
   | { kind: "line"; id: number }
   | { kind: "curve"; id: number }
   | { kind: "shape"; id: number }
-  | { kind: "measure"; id: number };
+  | { kind: "measure"; id: number }
+  | { kind: "formula"; id: number };
 
 export type CalculatorGuide = {
   label: string;

@@ -45,6 +45,8 @@ import type {
   DataPointStyle,
   DataPlotStyle,
   DataValue,
+  FormulaObjectKind,
+  GraphFormulaObject,
   GraphCurve,
   GraphLine,
   GraphMeasure,
@@ -63,6 +65,15 @@ import type {
   WorkspaceMode,
 } from "./graphTypes";
 import { parseDataValues } from "./lib/dataParsing";
+import {
+  FORMULA_OBJECT_KINDS,
+  createFormulaObject,
+  evaluateFormulaObject,
+  formatComputedValues,
+  getFormulaDefinition,
+  getFormulaValue,
+  setFormulaVariableValue,
+} from "./lib/formulaObjects";
 import {
   formatCurveEquation,
   formatLineEquation,
@@ -110,6 +121,7 @@ type GraphSnapshot = {
   lines: GraphLine[];
   curves: GraphCurve[];
   shapes: GraphShape[];
+  formulaObjects: GraphFormulaObject[];
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
   canvasStrokes: CanvasStroke[];
@@ -126,6 +138,7 @@ type WorkspaceCapture = {
   lines: GraphLine[];
   curves: GraphCurve[];
   shapes: GraphShape[];
+  formulaObjects: GraphFormulaObject[];
   measures: GraphMeasure[];
   dataPlots: DataPlot[];
   canvasStrokes: CanvasStroke[];
@@ -277,6 +290,11 @@ const cloneSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
     a: clonePoint(shape.a),
     b: clonePoint(shape.b),
   })),
+  formulaObjects: (snapshot.formulaObjects ?? []).map((object) => ({
+    ...object,
+    anchor: clonePoint(object.anchor),
+    variables: object.variables.map((variable) => ({ ...variable })),
+  })),
   measures: snapshot.measures.map((measure) => ({
     ...measure,
     a: clonePoint(measure.a),
@@ -327,6 +345,7 @@ const createEmptyWorkspaceCapture = (name = "Page 1"): WorkspaceCapture => ({
   lines: [],
   curves: [],
   shapes: [],
+  formulaObjects: [],
   measures: [],
   dataPlots: [],
   canvasStrokes: [],
@@ -403,6 +422,7 @@ const App = () => {
   const nextLineId = useRef(getNextId(initialWorkspace.lines));
   const nextCurveId = useRef(getNextId(initialWorkspace.curves));
   const nextShapeId = useRef(getNextId(initialWorkspace.shapes));
+  const nextFormulaObjectId = useRef(getNextId(initialWorkspace.formulaObjects ?? []));
   const nextMeasureId = useRef(getNextId(initialWorkspace.measures));
   const nextDataPlotId = useRef(getNextId(initialWorkspace.dataPlots));
   const nextCanvasStrokeId = useRef(getNextId(initialWorkspace.canvasStrokes ?? []));
@@ -416,6 +436,9 @@ const App = () => {
   const [lines, setLines] = useState<GraphLine[]>(initialWorkspace.lines);
   const [curves, setCurves] = useState<GraphCurve[]>(initialWorkspace.curves);
   const [shapes, setShapes] = useState<GraphShape[]>(initialWorkspace.shapes);
+  const [formulaObjects, setFormulaObjects] = useState<GraphFormulaObject[]>(
+    initialWorkspace.formulaObjects ?? []
+  );
   const [measures, setMeasures] = useState<GraphMeasure[]>(initialWorkspace.measures);
   const [dataPlots, setDataPlots] = useState<DataPlot[]>(initialWorkspace.dataPlots);
   const [canvasStrokes, setCanvasStrokes] = useState<CanvasStroke[]>(
@@ -438,6 +461,11 @@ const App = () => {
   const [showLeastSquares, setShowLeastSquares] = useState(false);
   const [referenceLineMode, setReferenceLineMode] = useState(false);
   const [referenceSquareSide, setReferenceSquareSide] = useState<1 | -1>(1);
+  const [formulaObjectKind, setFormulaObjectKind] =
+    useState<FormulaObjectKind>("circle");
+  const [expandedFormulaCards, setExpandedFormulaCards] = useState<
+    Record<string, boolean>
+  >({});
   const [canvasTool, setCanvasTool] = useState<CanvasTool>("none");
   const [isCanvasToolbarCollapsed, setIsCanvasToolbarCollapsed] = useState(true);
   const [canvasToolbarPosition, setCanvasToolbarPosition] =
@@ -627,6 +655,7 @@ const App = () => {
     lines,
     curves,
     shapes,
+    formulaObjects,
     measures,
     dataPlots,
     canvasStrokes,
@@ -660,6 +689,7 @@ const App = () => {
         lines,
         curves,
         shapes,
+        formulaObjects,
         measures,
         dataPlots,
         canvasStrokes,
@@ -730,6 +760,13 @@ const App = () => {
         ...shape,
         a: clonePoint(shape.a),
         b: clonePoint(shape.b),
+      }))
+    );
+    setFormulaObjects(
+      (capture.formulaObjects ?? []).map((object) => ({
+        ...object,
+        anchor: clonePoint(object.anchor),
+        variables: object.variables.map((variable) => ({ ...variable })),
       }))
     );
     setMeasures(
@@ -804,6 +841,7 @@ const App = () => {
     nextLineId.current = getNextId(capture.lines);
     nextCurveId.current = getNextId(capture.curves);
     nextShapeId.current = getNextId(capture.shapes);
+    nextFormulaObjectId.current = getNextId(capture.formulaObjects ?? []);
     nextMeasureId.current = getNextId(capture.measures);
     nextDataPlotId.current = getNextId(capture.dataPlots);
     nextCanvasStrokeId.current = getNextId(capture.canvasStrokes);
@@ -951,6 +989,7 @@ const App = () => {
       lines,
       curves,
       shapes,
+      formulaObjects,
       measures,
       dataPlots,
       canvasStrokes,
@@ -963,6 +1002,7 @@ const App = () => {
     setLines(next.lines);
     setCurves(next.curves);
     setShapes(next.shapes);
+    setFormulaObjects(next.formulaObjects);
     setMeasures(next.measures);
     setDataPlots(next.dataPlots);
     setCanvasStrokes(next.canvasStrokes);
@@ -1224,6 +1264,26 @@ const App = () => {
         showLabel: true,
       },
     ]);
+  };
+
+  const addFormulaObject = (kind = formulaObjectKind) => {
+    pushHistory();
+    const id = nextFormulaObjectId.current++;
+    const object = createFormulaObject(kind, id, selectedColor, {
+      id: 0,
+      x: roundCoordinate(-view.offsetX / view.pixelsPerUnit),
+      y: roundCoordinate(view.offsetY / view.pixelsPerUnit),
+    });
+    setFormulaObjects((current) => [...current, object]);
+    setExpandedFormulaCards((current) => ({ ...current, [`formula-${id}`]: true }));
+    setSelectedObject({ kind: "formula", id });
+  };
+
+  const toggleFormulaCard = (cardId: string) => {
+    setExpandedFormulaCards((current) => ({
+      ...current,
+      [cardId]: !(current[cardId] ?? true),
+    }));
   };
 
   const getReferenceSquare = (
@@ -1504,6 +1564,31 @@ const App = () => {
       });
     });
 
+    formulaObjects.forEach((object) => {
+      const minFormulaX = screenToWorld(rect.left, screenY).x;
+      const maxFormulaX = screenToWorld(rect.right, screenY).x;
+      const path = getFormulaObjectPath(object, minFormulaX, maxFormulaX).map(
+        worldToCanvas
+      );
+      if (path.length < 2) return;
+      if (isClosedFormulaObject(object) && isPointInsidePolygon(local, path)) {
+        choose(0, { kind: "formula", id: object.id });
+        return;
+      }
+      for (let index = 1; index < path.length; index += 1) {
+        choose(distanceToSegment(local, path[index - 1], path[index]), {
+          kind: "formula",
+          id: object.id,
+        });
+      }
+      if (isClosedFormulaObject(object)) {
+        choose(distanceToSegment(local, path[path.length - 1], path[0]), {
+          kind: "formula",
+          id: object.id,
+        });
+      }
+    });
+
     return nearestTarget;
   };
 
@@ -1577,6 +1662,30 @@ const App = () => {
           closestPointOnSegmentWorld(world, corner, corners[(index + 1) % corners.length]),
           { kind: "shape", id: shape.id }
         );
+      });
+    });
+
+    formulaObjects.forEach((object) => {
+      if (!isClosedFormulaObject(object)) {
+        const pointY = evaluateFormulaObject(object, world.x);
+        if (pointY !== null && Number.isFinite(pointY)) {
+          choose(
+            { id: 0, x: world.x, y: pointY },
+            { kind: "formula", id: object.id }
+          );
+        }
+        return;
+      }
+
+      const minFormulaX = screenToWorld(rect.left, screenY).x;
+      const maxFormulaX = screenToWorld(rect.right, screenY).x;
+      const path = getFormulaObjectPath(object, minFormulaX, maxFormulaX);
+      path.forEach((point, index) => {
+        const next = path[(index + 1) % path.length];
+        choose(closestPointOnSegmentWorld(world, point, next), {
+          kind: "formula",
+          id: object.id,
+        });
       });
     });
 
@@ -1656,12 +1765,115 @@ const App = () => {
     }
   };
 
+  const shiftPointBy = (point: GraphPoint, dx: number, dy: number): GraphPoint => ({
+    ...point,
+    x: roundCoordinate(point.x + dx),
+    y: roundCoordinate(point.y + dy),
+  });
+
+  const shiftFormulaObject = (
+    object: GraphFormulaObject,
+    dx: number,
+    dy: number
+  ): GraphFormulaObject => {
+    const shiftedAnchor = shiftPointBy(object.anchor, dx, dy);
+    if (isClosedFormulaObject(object)) return { ...object, anchor: shiftedAnchor };
+
+    if (object.kind === "line") {
+      const m = getFormulaValue(object, "m");
+      return {
+        ...object,
+        anchor: shiftedAnchor,
+        variables: object.variables.map((variable) =>
+          variable.key === "b"
+            ? { ...variable, value: roundCoordinate(variable.value + dy - m * dx) }
+            : variable
+        ),
+      };
+    }
+
+    if (object.kind === "parabola") {
+      const a = getFormulaValue(object, "a");
+      const b = getFormulaValue(object, "b");
+      const c = getFormulaValue(object, "c");
+      return {
+        ...object,
+        anchor: shiftedAnchor,
+        variables: object.variables.map((variable) => {
+          if (variable.key === "b") {
+            return { ...variable, value: roundCoordinate(b - 2 * a * dx) };
+          }
+          if (variable.key === "c") {
+            return {
+              ...variable,
+              value: roundCoordinate(a * dx ** 2 - b * dx + c + dy),
+            };
+          }
+          return variable;
+        }),
+      };
+    }
+
+    if (object.kind === "sine" || object.kind === "cosine") {
+      const B = getFormulaValue(object, "B");
+      return {
+        ...object,
+        anchor: shiftedAnchor,
+        variables: object.variables.map((variable) => {
+          if (variable.key === "C") {
+            return { ...variable, value: roundCoordinate(variable.value - B * dx) };
+          }
+          if (variable.key === "D") {
+            return { ...variable, value: roundCoordinate(variable.value + dy) };
+          }
+          return variable;
+        }),
+      };
+    }
+
+    if (object.kind === "exponential") {
+      const B = getFormulaValue(object, "B");
+      return {
+        ...object,
+        anchor: shiftedAnchor,
+        variables: object.variables.map((variable) => {
+          if (variable.key === "A") {
+            return {
+              ...variable,
+              value: roundCoordinate(variable.value * Math.exp(-B * dx)),
+            };
+          }
+          if (variable.key === "D") {
+            return { ...variable, value: roundCoordinate(variable.value + dy) };
+          }
+          return variable;
+        }),
+      };
+    }
+
+    if (object.kind === "logarithmic" || object.kind === "absolute") {
+      const B = getFormulaValue(object, "B");
+      return {
+        ...object,
+        anchor: shiftedAnchor,
+        variables: object.variables.map((variable) => {
+          if (variable.key === "C") {
+            return { ...variable, value: roundCoordinate(variable.value - B * dx) };
+          }
+          if (variable.key === "D") {
+            return { ...variable, value: roundCoordinate(variable.value + dy) };
+          }
+          return variable;
+        }),
+      };
+    }
+
+    return { ...object, anchor: shiftedAnchor };
+  };
+
   const moveObject = (target: ObjectTarget, dx: number, dy: number) => {
-    const shiftPoint = (point: GraphPoint): GraphPoint => ({
-      ...point,
-      x: roundCoordinate(point.x + dx),
-      y: roundCoordinate(point.y + dy),
-    });
+    const shiftPoint = (point: GraphPoint): GraphPoint =>
+      shiftPointBy(point, dx, dy);
 
     if (target.kind === "line") {
       setLines((current) =>
@@ -1701,6 +1913,15 @@ const App = () => {
       return;
     }
 
+    if (target.kind === "formula") {
+      setFormulaObjects((current) =>
+        current.map((object) =>
+          object.id === target.id ? shiftFormulaObject(object, dx, dy) : object
+        )
+      );
+      return;
+    }
+
     setShapes((current) =>
       current.map((shape) =>
         shape.id === target.id
@@ -1725,6 +1946,11 @@ const App = () => {
     if (target.kind === "measure") {
       setMeasures((current) => current.filter((measure) => measure.id !== target.id));
     }
+    if (target.kind === "formula") {
+      setFormulaObjects((current) =>
+        current.filter((object) => object.id !== target.id)
+      );
+    }
     setSelectedObject(null);
     setHoverMenu(null);
   };
@@ -1734,6 +1960,9 @@ const App = () => {
     if (target.kind === "line") return lines.find((line) => line.id === target.id) ?? null;
     if (target.kind === "curve") return curves.find((curve) => curve.id === target.id) ?? null;
     if (target.kind === "shape") return shapes.find((shape) => shape.id === target.id) ?? null;
+    if (target.kind === "formula") {
+      return formulaObjects.find((object) => object.id === target.id) ?? null;
+    }
     return measures.find((measure) => measure.id === target.id) ?? null;
   };
 
@@ -1760,6 +1989,14 @@ const App = () => {
     if (target.kind === "shape") {
       setShapes((current) =>
         current.map((shape) => (shape.id === target.id ? { ...shape, color } : shape))
+      );
+      return;
+    }
+    if (target.kind === "formula") {
+      setFormulaObjects((current) =>
+        current.map((object) =>
+          object.id === target.id ? { ...object, color } : object
+        )
       );
       return;
     }
@@ -1950,6 +2187,13 @@ const App = () => {
           : shape
       )
     );
+    setFormulaObjects((current) =>
+      current.map((object) =>
+        selected.has(`formula:${object.id}`)
+          ? shiftFormulaObject(object, dx, dy)
+          : object
+      )
+    );
     setMeasures((current) =>
       current.map((measure) =>
         selected.has(`measure:${measure.id}`)
@@ -2015,6 +2259,14 @@ const App = () => {
       );
       return;
     }
+    if (target.kind === "formula") {
+      setFormulaObjects((current) =>
+        current.map((object) =>
+          object.id === target.id ? { ...object, name: label || object.name } : object
+        )
+      );
+      return;
+    }
     setMeasures((current) =>
       current.map((measure) =>
         measure.id === target.id ? { ...measure, label } : measure
@@ -2049,6 +2301,13 @@ const App = () => {
       setMeasures((current) =>
         current.map((measure) =>
           measure.id === target.id ? { ...measure, showLabel } : measure
+        )
+      );
+    }
+    if (target.kind === "formula") {
+      setFormulaObjects((current) =>
+        current.map((object) =>
+          object.id === target.id ? { ...object, showLabel } : object
         )
       );
     }
@@ -2150,6 +2409,140 @@ const App = () => {
             y: roundCoordinate(center.y + height / 2),
           },
         };
+      })
+    );
+  };
+
+  const updateShapeFormulaVariable = (
+    shapeId: number,
+    variableKey: string,
+    value: number
+  ) => {
+    pushHistory();
+    setShapes((current) =>
+      current.map((shape) => {
+        if (shape.id !== shapeId) return shape;
+        const width = shape.b.x - shape.a.x;
+        const height = shape.b.y - shape.a.y;
+        const nextWidth =
+          shape.type === "square"
+            ? variableKey === "s"
+              ? value
+              : width
+            : variableKey === "w"
+              ? value
+              : width;
+        const nextHeight =
+          shape.type === "square"
+            ? variableKey === "s"
+              ? value
+              : height
+            : variableKey === "h"
+              ? value
+              : height;
+        return {
+          ...shape,
+          b: {
+            ...shape.b,
+            x: roundCoordinate(shape.a.x + nextWidth),
+            y: roundCoordinate(shape.a.y + nextHeight),
+          },
+        };
+      })
+    );
+  };
+
+  const updateLineFormulaVariable = (
+    lineId: number,
+    variableKey: string,
+    value: number
+  ) => {
+    const line = lines.find((item) => item.id === lineId);
+    if (!line) return;
+    const parts = getLineParts(line);
+    if (parts.vertical) {
+      updateLineFromEquation(lineId, { x: value });
+      return;
+    }
+    updateLineFromEquation(lineId, {
+      m: variableKey === "m" ? value : parts.m,
+      b: variableKey === "b" ? value : parts.b,
+    });
+  };
+
+  const updateCurveFormulaVariable = (
+    curveId: number,
+    variableKey: string,
+    value: number
+  ) => {
+    const curve = curves.find((item) => item.id === curveId);
+    const coefficients = curve ? getQuadraticCoefficients(curve) : null;
+    if (!coefficients) return;
+    updateCurveFromEquation(curveId, {
+      a: variableKey === "a" ? value : coefficients.a,
+      b: variableKey === "b" ? value : coefficients.b,
+      c: variableKey === "c" ? value : coefficients.c,
+    });
+  };
+
+  const updateFormulaObjectVariable = (
+    objectId: number,
+    variableKey: string,
+    value: number
+  ) => {
+    if (!Number.isFinite(value)) return;
+    pushHistory();
+    setFormulaObjects((current) =>
+      current.map((object) =>
+        object.id === objectId
+          ? setFormulaVariableValue(object, variableKey, value)
+          : object
+      )
+    );
+  };
+
+  const updateFormulaObjectAnchor = (
+    objectId: number,
+    axis: "x" | "y",
+    value: number
+  ) => {
+    if (!Number.isFinite(value)) return;
+    pushHistory();
+    setFormulaObjects((current) =>
+      current.map((object) =>
+        object.id === objectId
+          ? {
+              ...object,
+              anchor: { ...object.anchor, [axis]: roundCoordinate(value) },
+            }
+          : object
+      )
+    );
+  };
+
+  const updateMeasureFormulaVariable = (
+    measureId: number,
+    variableKey: string,
+    value: number
+  ) => {
+    if (!Number.isFinite(value)) return;
+    pushHistory();
+    setMeasures((current) =>
+      current.map((measure) => {
+        if (measure.id !== measureId) return measure;
+        if (variableKey === "x1") {
+          return { ...measure, a: { ...measure.a, x: roundCoordinate(value) } };
+        }
+        if (variableKey === "y1") {
+          return { ...measure, a: { ...measure.a, y: roundCoordinate(value) } };
+        }
+        if (variableKey === "x2") {
+          return { ...measure, b: { ...measure.b, x: roundCoordinate(value) } };
+        }
+        if (variableKey === "y2") {
+          return { ...measure, b: { ...measure.b, y: roundCoordinate(value) } };
+        }
+        return measure;
       })
     );
   };
@@ -2963,7 +3356,7 @@ const App = () => {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canvasStrokes, canvasTextBoxes, curves, lines, measures, points, selectedObject, shapes]);
+  }, [canvasStrokes, canvasTextBoxes, curves, formulaObjects, lines, measures, points, selectedObject, shapes]);
 
   useEffect(() => {
     if (!isResizingSidebar) return;
@@ -2994,77 +3387,74 @@ const App = () => {
     const canvas = canvasRef.current;
     if (!wrapper || !canvas) return;
 
-    const resizeCanvas = () => {
+    const syncCanvasSize = () => {
       const rect = wrapper.getBoundingClientRect();
       const dpr = getCanvasDpr();
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      const pixelWidth = Math.round(width * dpr);
+      const pixelHeight = Math.round(height * dpr);
+
       setCanvasSize((current) =>
-        current.width === rect.width && current.height === rect.height
+        current.width === width && current.height === height
           ? current
-          : { width: rect.width, height: rect.height }
+          : { width, height }
       );
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
-      drawGraph(canvas, view, {
-        points,
-        lines,
-        curves,
-        shapes,
-        measures,
-        dataPlots,
-        canvasStrokes,
-        hoverSnapPoint,
-        calculatorGuide,
-        calculatorMeanPoint,
-        correlationGuide,
-        draftPoints,
-        cursor,
-        connectPoints,
-        selectedColor,
-        tool,
-        selectedObject,
-        lockedGroupTargets,
-        isGroupLocked,
-        showLeastSquares,
-        leastSquares: leastSquaresSummary,
-      });
+
+      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+      if (canvas.style.width !== `${width}px`) canvas.style.width = `${width}px`;
+      if (canvas.style.height !== `${height}px`) canvas.style.height = `${height}px`;
     };
 
-    resizeCanvas();
-    const observer = new ResizeObserver(resizeCanvas);
+    syncCanvasSize();
+    const observer = new ResizeObserver(syncCanvasSize);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [calculatorGuide, calculatorMeanPoint, canvasStrokes, connectPoints, correlationGuide, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, isGroupLocked, leastSquaresSummary, lines, lockedGroupTargets, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (canvas) {
-      drawGraph(canvas, view, {
-        points,
-        lines,
-        curves,
-        shapes,
-        measures,
-        dataPlots,
-        canvasStrokes,
-        hoverSnapPoint,
-        calculatorGuide,
-        calculatorMeanPoint,
-        correlationGuide,
-        draftPoints,
-        cursor,
-        connectPoints,
-        selectedColor,
-        tool,
-        selectedObject,
-        lockedGroupTargets,
-        isGroupLocked,
-        showLeastSquares,
-        leastSquares: leastSquaresSummary,
-      });
+    if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
+
+    const dpr = getCanvasDpr();
+    const pixelWidth = Math.round(canvasSize.width * dpr);
+    const pixelHeight = Math.round(canvasSize.height * dpr);
+
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+    if (canvas.style.width !== `${canvasSize.width}px`) {
+      canvas.style.width = `${canvasSize.width}px`;
     }
-  }, [calculatorGuide, calculatorMeanPoint, canvasStrokes, connectPoints, correlationGuide, cursor, curves, dataPlots, draftPoints, hoverSnapPoint, isGroupLocked, leastSquaresSummary, lines, lockedGroupTargets, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
+    if (canvas.style.height !== `${canvasSize.height}px`) {
+      canvas.style.height = `${canvasSize.height}px`;
+    }
+
+    drawGraph(canvas, view, {
+      points,
+      lines,
+      curves,
+      shapes,
+      formulaObjects,
+      measures,
+      dataPlots,
+      canvasStrokes,
+      hoverSnapPoint,
+      calculatorGuide,
+      calculatorMeanPoint,
+      correlationGuide,
+      draftPoints,
+      cursor,
+      connectPoints,
+      selectedColor,
+      tool,
+      selectedObject,
+      lockedGroupTargets,
+      isGroupLocked,
+      showLeastSquares,
+      leastSquares: leastSquaresSummary,
+    });
+  }, [calculatorGuide, calculatorMeanPoint, canvasSize.height, canvasSize.width, canvasStrokes, connectPoints, correlationGuide, cursor, curves, dataPlots, draftPoints, formulaObjects, hoverSnapPoint, isGroupLocked, leastSquaresSummary, lines, lockedGroupTargets, measures, points, selectedColor, selectedObject, shapes, showLeastSquares, tool, view]);
 
   useEffect(
     () => () => {
@@ -3144,6 +3534,10 @@ const App = () => {
       const shape = shapes.find((item) => item.id === target.id);
       return shape ? formatShapeLabel(shape) : "Shape";
     }
+    if (target.kind === "formula") {
+      const object = formulaObjects.find((item) => item.id === target.id);
+      return object ? object.formula : "Formula object";
+    }
     const measure = measures.find((item) => item.id === target.id);
     return measure ? formatMeasureLabel(measure) : "Distance";
   };
@@ -3176,6 +3570,209 @@ const App = () => {
       selectedCalculatorObject?.value === undefined ? null : selectedCalculatorObject,
     selectedTarget: selectedObject,
     formatObject: formatObjectForCalculator,
+  };
+  const isFormulaPanelEmpty =
+    lines.length === 0 &&
+    curves.length === 0 &&
+    shapes.length === 0 &&
+    measures.length === 0 &&
+    formulaObjects.length === 0;
+  const getFormulaCardExpanded = (cardId: string, selected: boolean) =>
+    expandedFormulaCards[cardId] ?? selected;
+  const makeComputed = (
+    items: Array<[string, number | string]>
+  ): FormulaCardComputedValue[] =>
+    items.map(([label, value]) => ({
+      label,
+      value: typeof value === "number" ? formatNumber(value) : value,
+    }));
+  const renderLineFormulaCard = (line: GraphLine, index: number) => {
+    const target: ObjectTarget = { kind: "line", id: line.id };
+    const selected = isSelectedObject(selectedObject, "line", line.id);
+    const parts = getLineParts(line);
+    const variables: FormulaCardVariable[] = parts.vertical
+      ? [{ key: "x", label: "x", value: parts.x, min: -20, max: 20, step: 0.1 }]
+      : [
+          { key: "m", label: "slope m", value: parts.m, min: -20, max: 20, step: 0.05 },
+          { key: "b", label: "intercept b", value: parts.b, min: -20, max: 20, step: 0.1 },
+        ];
+    return (
+      <FormulaObjectCard
+        color={line.color}
+        computed={
+          parts.vertical
+            ? makeComputed([["x-intercept", parts.x]])
+            : makeComputed([
+                ["slope", parts.m],
+                ["y-intercept", parts.b],
+              ])
+        }
+        expanded={getFormulaCardExpanded(`line-${line.id}`, selected)}
+        formula={parts.vertical ? `x = ${formatNumber(parts.x)}` : "y = mx + b"}
+        isSelected={selected}
+        key={`line-card-${line.id}`}
+        name={`Line L${index + 1}`}
+        onColorChange={(color) => updateObjectColor(target, color)}
+        onDelete={() => removeObject(target)}
+        onLabelToggle={() => updateLabelVisibility(target, !line.showLabel)}
+        onSelect={() => setSelectedObject(target)}
+        onToggleExpanded={() => toggleFormulaCard(`line-${line.id}`)}
+        onVariableChange={(key, value) => updateLineFormulaVariable(line.id, key, value)}
+        showLabel={line.showLabel}
+        variables={variables}
+      />
+    );
+  };
+  const renderCurveFormulaCard = (curve: GraphCurve, index: number) => {
+    const target: ObjectTarget = { kind: "curve", id: curve.id };
+    const selected = isSelectedObject(selectedObject, "curve", curve.id);
+    const coefficients = getQuadraticCoefficients(curve);
+    return (
+      <FormulaObjectCard
+        color={curve.color}
+        computed={
+          coefficients
+            ? makeComputed([
+                ["a", coefficients.a],
+                ["b", coefficients.b],
+                ["c", coefficients.c],
+              ])
+            : [{ label: "status", value: "needs 3 different x-values" }]
+        }
+        expanded={getFormulaCardExpanded(`curve-${curve.id}`, selected)}
+        formula="y = ax^2 + bx + c"
+        isSelected={selected}
+        key={`curve-card-${curve.id}`}
+        name={`Quadratic C${index + 1}`}
+        onColorChange={(color) => updateObjectColor(target, color)}
+        onDelete={() => removeObject(target)}
+        onLabelToggle={() => updateLabelVisibility(target, !curve.showLabel)}
+        onSelect={() => setSelectedObject(target)}
+        onToggleExpanded={() => toggleFormulaCard(`curve-${curve.id}`)}
+        onVariableChange={(key, value) => updateCurveFormulaVariable(curve.id, key, value)}
+        showLabel={curve.showLabel}
+        variables={
+          coefficients
+            ? [
+                { key: "a", label: "a", value: coefficients.a, min: -5, max: 5, step: 0.05 },
+                { key: "b", label: "b", value: coefficients.b, min: -20, max: 20, step: 0.1 },
+                { key: "c", label: "c", value: coefficients.c, min: -20, max: 20, step: 0.1 },
+              ]
+            : []
+        }
+      />
+    );
+  };
+  const renderShapeFormulaCard = (shape: GraphShape, index: number) => {
+    const target: ObjectTarget = { kind: "shape", id: shape.id };
+    const selected = isSelectedObject(selectedObject, "shape", shape.id);
+    const width = shape.b.x - shape.a.x;
+    const height = shape.b.y - shape.a.y;
+    const side = width;
+    const formula = shape.type === "square" ? "A = s^2, P = 4s" : "A = w x h, P = 2(w + h)";
+    const computed =
+      shape.type === "square"
+        ? makeComputed([
+            ["area", side ** 2],
+            ["perimeter", 4 * Math.abs(side)],
+            ["center", `${formatNumber(shape.a.x + side / 2)}, ${formatNumber(shape.a.y + side / 2)}`],
+          ])
+        : makeComputed([
+            ["area", Math.abs(width * height)],
+            ["perimeter", 2 * (Math.abs(width) + Math.abs(height))],
+            ["center", `${formatNumber(shape.a.x + width / 2)}, ${formatNumber(shape.a.y + height / 2)}`],
+          ]);
+    return (
+      <FormulaObjectCard
+        color={shape.color}
+        computed={computed}
+        expanded={getFormulaCardExpanded(`shape-${shape.id}`, selected)}
+        formula={formula}
+        isSelected={selected}
+        key={`shape-card-${shape.id}`}
+        name={`${shape.type === "square" ? "Square" : "Rectangle"} S${index + 1}`}
+        onColorChange={(color) => updateObjectColor(target, color)}
+        onDelete={() => removeObject(target)}
+        onLabelToggle={() => updateLabelVisibility(target, !shape.showLabel)}
+        onSelect={() => setSelectedObject(target)}
+        onToggleExpanded={() => toggleFormulaCard(`shape-${shape.id}`)}
+        onVariableChange={(key, value) => updateShapeFormulaVariable(shape.id, key, value)}
+        showLabel={shape.showLabel}
+        variables={
+          shape.type === "square"
+            ? [{ key: "s", label: "side s", value: side, min: -20, max: 20, step: 0.1 }]
+            : [
+                { key: "w", label: "width w", value: width, min: -20, max: 20, step: 0.1 },
+                { key: "h", label: "height h", value: height, min: -20, max: 20, step: 0.1 },
+              ]
+        }
+      />
+    );
+  };
+  const renderMeasureFormulaCard = (measure: GraphMeasure, index: number) => {
+    const target: ObjectTarget = { kind: "measure", id: measure.id };
+    const selected = isSelectedObject(selectedObject, "measure", measure.id);
+    const dx = measure.b.x - measure.a.x;
+    const dy = measure.b.y - measure.a.y;
+    return (
+      <FormulaObjectCard
+        color={measure.color}
+        computed={makeComputed([
+          ["distance", getDistance(measure.a, measure.b)],
+          ["dx", dx],
+          ["dy", dy],
+        ])}
+        expanded={getFormulaCardExpanded(`measure-${measure.id}`, selected)}
+        formula="d = sqrt((x2 - x1)^2 + (y2 - y1)^2)"
+        isSelected={selected}
+        key={`measure-card-${measure.id}`}
+        name={`Distance D${index + 1}`}
+        onColorChange={(color) => updateObjectColor(target, color)}
+        onDelete={() => removeObject(target)}
+        onLabelToggle={() => updateLabelVisibility(target, !measure.showLabel)}
+        onSelect={() => setSelectedObject(target)}
+        onToggleExpanded={() => toggleFormulaCard(`measure-${measure.id}`)}
+        onVariableChange={(key, value) => updateMeasureFormulaVariable(measure.id, key, value)}
+        showLabel={measure.showLabel}
+        variables={[
+          { key: "x1", label: "x1", value: measure.a.x, min: -20, max: 20, step: 0.1 },
+          { key: "y1", label: "y1", value: measure.a.y, min: -20, max: 20, step: 0.1 },
+          { key: "x2", label: "x2", value: measure.b.x, min: -20, max: 20, step: 0.1 },
+          { key: "y2", label: "y2", value: measure.b.y, min: -20, max: 20, step: 0.1 },
+        ]}
+      />
+    );
+  };
+  const renderFormulaObjectCard = (object: GraphFormulaObject) => {
+    const target: ObjectTarget = { kind: "formula", id: object.id };
+    const selected = isSelectedObject(selectedObject, "formula", object.id);
+    return (
+      <FormulaObjectCard
+        color={object.color}
+        computed={formatComputedValues(object)}
+        expanded={getFormulaCardExpanded(`formula-${object.id}`, selected)}
+        formula={object.formula}
+        isSelected={selected}
+        key={`formula-card-${object.id}`}
+        name={object.name}
+        onColorChange={(color) => updateObjectColor(target, color)}
+        onDelete={() => removeObject(target)}
+        onLabelToggle={() => updateLabelVisibility(target, object.showLabel === false)}
+        onSelect={() => setSelectedObject(target)}
+        onToggleExpanded={() => toggleFormulaCard(`formula-${object.id}`)}
+        onVariableChange={(key, value) => {
+          if (key === "anchor-x") updateFormulaObjectAnchor(object.id, "x", value);
+          else if (key === "anchor-y") updateFormulaObjectAnchor(object.id, "y", value);
+          else updateFormulaObjectVariable(object.id, key, value);
+        }}
+        showLabel={object.showLabel !== false}
+        variables={[
+          { key: "anchor-x", label: "anchor x", value: object.anchor.x, min: -20, max: 20, step: 0.1 },
+          { key: "anchor-y", label: "anchor y", value: object.anchor.y, min: -20, max: 20, step: 0.1 },
+          ...object.variables,
+        ]}
+      />
+    );
   };
   const selectedCapture =
     captures.find((capture) => capture.id === selectedCaptureId) ?? null;
@@ -4000,11 +4597,12 @@ const App = () => {
           <button
             className="danger"
             onClick={() => {
-              if (lines.length === 0 && curves.length === 0 && shapes.length === 0 && measures.length === 0) return;
+              if (lines.length === 0 && curves.length === 0 && shapes.length === 0 && formulaObjects.length === 0 && measures.length === 0) return;
               pushHistory();
               setLines([]);
               setCurves([]);
               setShapes([]);
+              setFormulaObjects([]);
               setMeasures([]);
               setDraftPoints([]);
               setSelectedObject(null);
@@ -4189,321 +4787,36 @@ const App = () => {
 
         <section className="control-section">
           <h2>Equations</h2>
-          <div className="equation-list">
-            {lines.length === 0 && curves.length === 0 && shapes.length === 0 && measures.length === 0 ? (
+          <div className="formula-add-row">
+            <select
+              aria-label="Formula object type"
+              onChange={(event) =>
+                setFormulaObjectKind(event.target.value as FormulaObjectKind)
+              }
+              value={formulaObjectKind}
+            >
+              {FORMULA_OBJECT_KINDS.map((kind) => (
+                <option key={kind} value={kind}>
+                  {getFormulaDefinition(kind).name}
+                </option>
+              ))}
+            </select>
+            <button onClick={() => addFormulaObject()} type="button">
+              Add formula object
+            </button>
+          </div>
+          <div className="formula-card-list">
+            {isFormulaPanelEmpty ? (
               <p className="empty-state">
-                Draw a line, curve, rectangle, square, or distance marker.
+                Draw or add an object to control its formula and variables.
               </p>
             ) : (
               <>
-                {lines.map((line, index) => (
-                  <div
-                    className={
-                      isSelectedObject(selectedObject, "line", line.id)
-                        ? "equation-row selected"
-                        : "equation-row"
-                    }
-                    key={`line-${line.id}`}
-                    onClick={() => setSelectedObject({ kind: "line", id: line.id })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        setSelectedObject({ kind: "line", id: line.id });
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    {(() => {
-                      const target: ObjectTarget = { kind: "line", id: line.id };
-                      return (
-                        <>
-                    <span>L{index + 1}</span>
-                    <input
-                      aria-label={`Change line ${index + 1} color`}
-                      className="row-color-input"
-                      onChange={(event) => updateObjectColor(target, event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      type="color"
-                      value={line.color}
-                    />
-                    <code>{getLineLabel(line)}</code>
-                    <button
-                      aria-label={
-                        line.showLabel
-                          ? `Hide line ${index + 1} label`
-                          : `Show line ${index + 1} label`
-                      }
-                      className={
-                        line.showLabel
-                          ? "equation-label-toggle active"
-                          : "equation-label-toggle"
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        updateLabelVisibility(target, !line.showLabel);
-                        if (!line.showLabel) setSelectedObject(target);
-                      }}
-                      title={line.showLabel ? "Hide label" : "Show label"}
-                      type="button"
-                    >
-                      {line.showLabel ? "-" : "+"}
-                    </button>
-                    <button
-                      aria-label={`Delete line ${index + 1}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        pushHistory();
-                        setLines((current) =>
-                          current.filter((item) => item.id !== line.id)
-                        );
-                      }}
-                      type="button"
-                    >
-                      x
-                    </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))}
-                {curves.map((curve, index) => (
-                  <div
-                    className={
-                      isSelectedObject(selectedObject, "curve", curve.id)
-                        ? "equation-row selected"
-                        : "equation-row"
-                    }
-                    key={`curve-${curve.id}`}
-                    onClick={() => setSelectedObject({ kind: "curve", id: curve.id })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        setSelectedObject({ kind: "curve", id: curve.id });
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    {(() => {
-                      const target: ObjectTarget = { kind: "curve", id: curve.id };
-                      return (
-                        <>
-                    <span>C{index + 1}</span>
-                    <input
-                      aria-label={`Change curve ${index + 1} color`}
-                      className="row-color-input"
-                      onChange={(event) => updateObjectColor(target, event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      type="color"
-                      value={curve.color}
-                    />
-                    <code>{getCurveLabel(curve)}</code>
-                    <button
-                      aria-label={
-                        curve.showLabel
-                          ? `Hide curve ${index + 1} label`
-                          : `Show curve ${index + 1} label`
-                      }
-                      className={
-                        curve.showLabel
-                          ? "equation-label-toggle active"
-                          : "equation-label-toggle"
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        updateLabelVisibility(target, !curve.showLabel);
-                        if (!curve.showLabel) setSelectedObject(target);
-                      }}
-                      title={curve.showLabel ? "Hide label" : "Show label"}
-                      type="button"
-                    >
-                      {curve.showLabel ? "-" : "+"}
-                    </button>
-                    <button
-                      aria-label={`Delete curve ${index + 1}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        pushHistory();
-                        setCurves((current) =>
-                          current.filter((item) => item.id !== curve.id)
-                        );
-                      }}
-                      type="button"
-                    >
-                      x
-                    </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))}
-                {shapes.map((shape, index) => (
-                  <div
-                    className={
-                      isSelectedObject(selectedObject, "shape", shape.id)
-                        ? "equation-row selected"
-                        : "equation-row"
-                    }
-                    key={`shape-${shape.id}`}
-                    onClick={() => setSelectedObject({ kind: "shape", id: shape.id })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        setSelectedObject({ kind: "shape", id: shape.id });
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    {(() => {
-                      const target: ObjectTarget = { kind: "shape", id: shape.id };
-                      return (
-                        <>
-                    <span>S{index + 1}</span>
-                    <input
-                      aria-label={`Change shape ${index + 1} color`}
-                      className="row-color-input"
-                      onChange={(event) => updateObjectColor(target, event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      type="color"
-                      value={shape.color}
-                    />
-                    <code>{getShapeDisplayLabel(shape)}</code>
-                    <button
-                      aria-label={
-                        shape.showLabel
-                          ? `Hide shape ${index + 1} label`
-                          : `Show shape ${index + 1} label`
-                      }
-                      className={
-                        shape.showLabel
-                          ? "equation-label-toggle active"
-                          : "equation-label-toggle"
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        updateLabelVisibility(target, !shape.showLabel);
-                        if (!shape.showLabel) setSelectedObject(target);
-                      }}
-                      title={shape.showLabel ? "Hide label" : "Show label"}
-                      type="button"
-                    >
-                      {shape.showLabel ? "-" : "+"}
-                    </button>
-                    <button
-                      aria-label={`Delete shape ${index + 1}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        pushHistory();
-                        setShapes((current) =>
-                          current.filter((item) => item.id !== shape.id)
-                        );
-                      }}
-                      type="button"
-                    >
-                      x
-                    </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))}
-                {measures.map((measure, index) => (
-                  <div
-                    className={
-                      isSelectedObject(selectedObject, "measure", measure.id)
-                        ? "equation-row measure-row selected"
-                        : "equation-row measure-row"
-                    }
-                    key={`measure-${measure.id}`}
-                    onClick={() => setSelectedObject({ kind: "measure", id: measure.id })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        setSelectedObject({ kind: "measure", id: measure.id });
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    {(() => {
-                      const target: ObjectTarget = { kind: "measure", id: measure.id };
-                      const showEndpointLabels = measure.showEndpointLabels ?? true;
-                      return (
-                        <>
-                    <span>D{index + 1}</span>
-                    <input
-                      aria-label={`Change distance marker ${index + 1} color`}
-                      className="row-color-input"
-                      onChange={(event) => updateObjectColor(target, event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      type="color"
-                      value={measure.color}
-                    />
-                    <code>{getMeasureDisplayLabel(measure)}</code>
-                    <button
-                      aria-label={
-                        measure.showLabel
-                          ? `Hide distance marker ${index + 1} label`
-                          : `Show distance marker ${index + 1} label`
-                      }
-                      className={
-                        measure.showLabel
-                          ? "equation-label-toggle active"
-                          : "equation-label-toggle"
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        updateLabelVisibility(target, !measure.showLabel);
-                        if (!measure.showLabel) setSelectedObject(target);
-                      }}
-                      title={measure.showLabel ? "Hide label" : "Show label"}
-                      type="button"
-                    >
-                      {measure.showLabel ? "-" : "+"}
-                    </button>
-                    <button
-                      aria-label={
-                        showEndpointLabels
-                          ? `Hide distance marker ${index + 1} endpoint labels`
-                          : `Show distance marker ${index + 1} endpoint labels`
-                      }
-                      className={
-                        showEndpointLabels
-                          ? "equation-label-toggle active"
-                          : "equation-label-toggle"
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        updateMeasureEndpointLabelVisibility(
-                          measure.id,
-                          !showEndpointLabels
-                        );
-                      }}
-                      title={
-                        showEndpointLabels
-                          ? "Hide endpoint labels"
-                          : "Show endpoint labels"
-                      }
-                      type="button"
-                    >
-                      {showEndpointLabels ? "D" : "+D"}
-                    </button>
-                    <button
-                      aria-label={`Delete distance marker ${index + 1}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        pushHistory();
-                        setMeasures((current) =>
-                          current.filter((item) => item.id !== measure.id)
-                        );
-                      }}
-                      type="button"
-                    >
-                      x
-                    </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))}
+                {lines.map(renderLineFormulaCard)}
+                {curves.map(renderCurveFormulaCard)}
+                {shapes.map(renderShapeFormulaCard)}
+                {formulaObjects.map(renderFormulaObjectCard)}
+                {measures.map(renderMeasureFormulaCard)}
               </>
             )}
           </div>
@@ -5031,6 +5344,7 @@ const GraphPagePreview = ({
         lines: state.lines,
         curves: state.curves,
         shapes: state.shapes,
+        formulaObjects: state.formulaObjects ?? [],
         measures: state.measures,
         dataPlots: state.dataPlots,
         canvasStrokes: state.canvasStrokes ?? [],
@@ -5597,6 +5911,118 @@ const CanvasToolPalette = ({
   );
 };
 
+type FormulaCardVariable = {
+  key: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+};
+
+type FormulaCardComputedValue = {
+  label: string;
+  value: string;
+};
+
+const FormulaObjectCard = ({
+  color,
+  computed,
+  expanded,
+  formula,
+  isSelected,
+  name,
+  onColorChange,
+  onDelete,
+  onLabelToggle,
+  onSelect,
+  onToggleExpanded,
+  onVariableChange,
+  showLabel,
+  variables,
+}: {
+  color: string;
+  computed: FormulaCardComputedValue[];
+  expanded: boolean;
+  formula: string;
+  isSelected: boolean;
+  name: string;
+  onColorChange: (color: string) => void;
+  onDelete: () => void;
+  onLabelToggle: () => void;
+  onSelect: () => void;
+  onToggleExpanded: () => void;
+  onVariableChange: (key: string, value: number) => void;
+  showLabel: boolean;
+  variables: FormulaCardVariable[];
+}) => (
+  <article className={isSelected ? "formula-card selected" : "formula-card"}>
+    <button className="formula-card-head" onClick={onSelect} type="button">
+      <span className="formula-card-title">{name}</span>
+      <code>{formula}</code>
+    </button>
+    <div className="formula-card-actions">
+      <input
+        aria-label={`Change ${name} color`}
+        className="row-color-input"
+        onChange={(event) => onColorChange(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        type="color"
+        value={color}
+      />
+      <button
+        className={showLabel ? "equation-label-toggle active" : "equation-label-toggle"}
+        onClick={onLabelToggle}
+        title={showLabel ? "Hide label" : "Show label"}
+        type="button"
+      >
+        {showLabel ? "-" : "+"}
+      </button>
+      <button onClick={onToggleExpanded} type="button">
+        {expanded ? "collapse" : "expand"}
+      </button>
+      <button onClick={onDelete} type="button">
+        x
+      </button>
+    </div>
+    {expanded ? (
+      <div className="formula-card-body">
+        {variables.map((variable) => (
+          <label className="formula-variable" key={variable.key}>
+            <span>{variable.label}</span>
+            <input
+              max={variable.max}
+              min={variable.min}
+              onChange={(event) =>
+                onVariableChange(variable.key, Number(event.target.value))
+              }
+              step={variable.step}
+              type="range"
+              value={variable.value}
+            />
+            <input
+              onChange={(event) =>
+                onVariableChange(variable.key, Number(event.target.value))
+              }
+              step="any"
+              type="number"
+              value={formatNumber(variable.value)}
+            />
+          </label>
+        ))}
+        <div className="formula-computed-grid">
+          {computed.map((item) => (
+            <div key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : null}
+  </article>
+);
+
 const LineEditor = ({
   line,
   onChange,
@@ -5784,6 +6210,7 @@ const drawGraph = (
     lines: GraphLine[];
     curves: GraphCurve[];
     shapes: GraphShape[];
+    formulaObjects: GraphFormulaObject[];
     measures: GraphMeasure[];
     dataPlots: DataPlot[];
     canvasStrokes: CanvasStroke[];
@@ -5910,6 +6337,16 @@ const drawGraph = (
       height
     );
   }
+
+  graph.formulaObjects.forEach((object) => {
+    const isSelected =
+      isSelectedObject(graph.selectedObject, "formula", object.id) ||
+      isGraphGroupTargetSelected(graph.lockedGroupTargets, {
+        kind: "formula",
+        id: object.id,
+      });
+    drawFormulaObject(context, object, toScreen, minX, maxX, isSelected);
+  });
 
   graph.shapes.forEach((shape, index) => {
     const isSelected =
@@ -7258,6 +7695,146 @@ const drawShapeSelection = (
   corners.slice(1).forEach((corner) => context.lineTo(corner.x, corner.y));
   context.closePath();
   context.stroke();
+  context.restore();
+};
+
+const getFormulaObjectPath = (
+  object: GraphFormulaObject,
+  minX: number,
+  maxX: number,
+  sampleCount = 180
+): GraphPoint[] => {
+  const x = object.anchor.x;
+  const y = object.anchor.y;
+  const value = (key: string) => getFormulaValue(object, key);
+
+  if (object.kind === "square") {
+    const s = value("s");
+    return [
+      { id: 0, x, y },
+      { id: 0, x: x + s, y },
+      { id: 0, x: x + s, y: y + s },
+      { id: 0, x, y: y + s },
+    ];
+  }
+
+  if (object.kind === "rectangle") {
+    const w = value("w");
+    const h = value("h");
+    return [
+      { id: 0, x, y },
+      { id: 0, x: x + w, y },
+      { id: 0, x: x + w, y: y + h },
+      { id: 0, x, y: y + h },
+    ];
+  }
+
+  if (object.kind === "triangle") {
+    const b = value("b");
+    const h = value("h");
+    return [
+      { id: 0, x, y },
+      { id: 0, x: x + b, y },
+      { id: 0, x: x + b / 2, y: y + h },
+    ];
+  }
+
+  if (object.kind === "right-triangle") {
+    const a = value("a");
+    const b = value("b");
+    return [
+      { id: 0, x, y },
+      { id: 0, x: x + a, y },
+      { id: 0, x: x + a, y: y + b },
+    ];
+  }
+
+  if (object.kind === "circle" || object.kind === "ellipse") {
+    const radiusX =
+      object.kind === "circle"
+        ? Math.abs(value("r"))
+        : Math.abs(value("a"));
+    const radiusY =
+      object.kind === "circle"
+        ? Math.abs(value("r"))
+        : Math.abs(value("b"));
+    return Array.from({ length: sampleCount }, (_, index) => {
+      const angle = (Math.PI * 2 * index) / sampleCount;
+      return {
+        id: 0,
+        x: x + Math.cos(angle) * radiusX,
+        y: y + Math.sin(angle) * radiusY,
+      };
+    });
+  }
+
+  const points: GraphPoint[] = [];
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const pointX = minX + ((maxX - minX) * index) / sampleCount;
+    const pointY = evaluateFormulaObject(object, pointX);
+    if (pointY === null || !Number.isFinite(pointY)) continue;
+    points.push({ id: 0, x: pointX, y: pointY });
+  }
+  return points;
+};
+
+const isClosedFormulaObject = (object: GraphFormulaObject) =>
+  [
+    "square",
+    "rectangle",
+    "circle",
+    "triangle",
+    "right-triangle",
+    "ellipse",
+  ].includes(object.kind);
+
+const drawFormulaObject = (
+  context: CanvasRenderingContext2D,
+  object: GraphFormulaObject,
+  toScreen: (point: GraphPoint) => { x: number; y: number },
+  minX: number,
+  maxX: number,
+  isSelected: boolean
+) => {
+  const points = getFormulaObjectPath(object, minX, maxX);
+  if (points.length < 2) return;
+  const screenPoints = points.map(toScreen);
+  const closed = isClosedFormulaObject(object);
+
+  context.save();
+  if (isSelected) {
+    context.strokeStyle = "rgba(36, 33, 30, 0.28)";
+    context.lineWidth = 8;
+    context.beginPath();
+    screenPoints.forEach((point, index) => {
+      if (index === 0) context.moveTo(point.x, point.y);
+      else context.lineTo(point.x, point.y);
+    });
+    if (closed) context.closePath();
+    context.stroke();
+  }
+
+  context.beginPath();
+  context.strokeStyle = object.color;
+  context.fillStyle = withAlpha(object.color, closed ? 0.12 : 0);
+  context.lineWidth = 2.5;
+  screenPoints.forEach((point, index) => {
+    if (index === 0) context.moveTo(point.x, point.y);
+    else context.lineTo(point.x, point.y);
+  });
+  if (closed) {
+    context.closePath();
+    context.fill();
+  }
+  context.stroke();
+
+  const anchorScreen = toScreen(object.anchor);
+  drawHandle(context, anchorScreen, object.color);
+  if (object.showLabel !== false) {
+    context.font = "700 12px Inter, system-ui, sans-serif";
+    context.fillStyle = "#24211e";
+    context.fillText(object.name, anchorScreen.x + 10, anchorScreen.y - 18);
+  }
   context.restore();
 };
 

@@ -1078,6 +1078,126 @@ button:disabled {
   background: #eef7f8;
 }
 
+.formula-add-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.formula-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.formula-card {
+  border: 1px solid rgba(118, 127, 145, 0.28);
+  border-radius: 8px;
+  background: rgba(23, 26, 31, 0.72);
+  overflow: hidden;
+}
+
+.formula-card.selected {
+  border-color: #4aa8ff;
+  box-shadow: 0 0 0 1px rgba(74, 168, 255, 0.32);
+}
+
+.formula-card-head {
+  width: 100%;
+  min-height: 0;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.formula-card-title {
+  color: #f0f3fa;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.formula-card-head code {
+  max-width: 100%;
+  color: #aedcff;
+  font-size: 0.76rem;
+  white-space: normal;
+}
+
+.formula-card-actions {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 7px;
+  align-items: center;
+  padding: 0 10px 9px;
+}
+
+.formula-card-actions button {
+  min-height: 30px;
+  padding: 0 9px;
+}
+
+.formula-card-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid rgba(118, 127, 145, 0.22);
+}
+
+.formula-variable {
+  display: grid;
+  grid-template-columns: 64px minmax(90px, 1fr) 72px;
+  gap: 8px;
+  align-items: center;
+}
+
+.formula-variable span {
+  color: #c9d2e3;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.formula-variable input[type="range"] {
+  width: 100%;
+}
+
+.formula-variable input[type="number"] {
+  min-width: 0;
+  padding: 6px;
+  font-size: 0.76rem;
+}
+
+.formula-computed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.formula-computed-grid div {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid rgba(118, 127, 145, 0.2);
+  border-radius: 6px;
+  background: rgba(13, 16, 21, 0.48);
+}
+
+.formula-computed-grid span {
+  color: #9da8ba;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.formula-computed-grid strong {
+  color: #f5f7fb;
+  font-size: 0.78rem;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
