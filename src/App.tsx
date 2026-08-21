@@ -6810,6 +6810,8 @@ const drawCalculatorStatisticGuide = (
   const showAll = highlights.size === 0;
   const has = (...values: StatisticHighlight[]) =>
     showAll || values.some((value) => highlights.has(value));
+  const selectedHas = (...values: StatisticHighlight[]) =>
+    values.some((value) => highlights.has(value));
   const accent =
     guide.statistic === "MEAN"
       ? "#39ff14"
@@ -6929,6 +6931,68 @@ const drawCalculatorStatisticGuide = (
     });
     drawStatisticLabel(context, `Σ horizontal squares = ${formatNumber(total)}`, 12, height - 64, color, width, height);
   };
+  const drawSquaredDeviationStretch = (axis: "x" | "y", color: string, fill: string) => {
+    let total = 0;
+    context.save();
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = 2.5;
+    context.shadowColor = color;
+    context.shadowBlur = 8;
+    pairs.forEach((pair) => {
+      const deviation = axis === "x" ? pair.x - meanX : pair.y - meanY;
+      const side = Math.abs(deviation);
+      if (side < 0.000001) return;
+      const squared = deviation ** 2;
+      total += squared;
+      const signedSquared = Math.sign(deviation) * squared;
+      const stretchedPoint =
+        axis === "x"
+          ? { id: 0, x: meanX + signedSquared, y: pair.y }
+          : { id: 0, x: pair.x, y: meanY + signedSquared };
+      const original = toScreen({ id: 0, x: pair.x, y: pair.y });
+      const stretched = toScreen(stretchedPoint);
+      context.globalAlpha = 0.88;
+      context.setLineDash([7, 5]);
+      context.beginPath();
+      context.moveTo(original.x, original.y);
+      context.lineTo(stretched.x, stretched.y);
+      context.stroke();
+      context.setLineDash([]);
+      context.globalAlpha = 0.18;
+      context.beginPath();
+      context.arc(stretched.x, stretched.y, 12, 0, Math.PI * 2);
+      context.fillStyle = fill;
+      context.fill();
+      context.globalAlpha = 1;
+      context.beginPath();
+      context.arc(stretched.x, stretched.y, 5.5, 0, Math.PI * 2);
+      context.fillStyle = color;
+      context.fill();
+      context.strokeStyle = "#ffffff";
+      context.lineWidth = 1.5;
+      context.stroke();
+      context.fillStyle = color;
+      context.font = "800 11px Inter, system-ui, sans-serif";
+      const labelX = clamp(stretched.x + 8, 8, width - 130);
+      const labelY = clamp(stretched.y - 8, 16, height - 12);
+      context.fillText(`${axis === "x" ? "dx" : "dy"}^2 stretch ${formatNumber(squared)}`, labelX, labelY);
+      context.strokeStyle = color;
+      context.lineWidth = 2.5;
+    });
+    context.restore();
+    drawStatisticLabel(
+      context,
+      axis === "x"
+        ? `stretch x: dx -> sign(dx) dx^2; total = ${formatNumber(total)}`
+        : `stretch y: dy -> sign(dy) dy^2; total = ${formatNumber(total)}`,
+      12,
+      axis === "x" ? height - 92 : height - 120,
+      color,
+      width,
+      height
+    );
+  };
   const drawAverageVarianceSquare = (
     axis: "x" | "y",
     side: number,
@@ -7029,7 +7093,37 @@ const drawCalculatorStatisticGuide = (
     if (has("mean-point", "mean-y")) drawHorizontal(meanY);
     if (has("mean-point", "mean-x")) drawVertical(meanX);
     if (has("mean-point")) drawStatisticMarker(context, meanScreen, accent);
-    drawStatisticLabel(context, guide.label, meanScreen.x + 14, meanScreen.y - 28, accent, width, height);
+    if (has("mean-point", "mean-x")) {
+      drawStatisticLabel(
+        context,
+        `x mean = ${formatNumber(meanX)}`,
+        meanScreen.x + 14,
+        18,
+        accent,
+        width,
+        height
+      );
+    }
+    if (has("mean-point", "mean-y")) {
+      drawStatisticLabel(
+        context,
+        `y mean = ${formatNumber(meanY)}`,
+        meanScreen.x + 14,
+        meanScreen.y - 28,
+        accent,
+        width,
+        height
+      );
+    }
+    drawStatisticLabel(
+      context,
+      `mean point (${formatNumber(meanX)}, ${formatNumber(meanY)})`,
+      meanScreen.x + 14,
+      meanScreen.y + 10,
+      accent,
+      width,
+      height
+    );
   }
 
   if (guide.statistic === "MEDIAN") {
@@ -7079,6 +7173,12 @@ const drawCalculatorStatisticGuide = (
     if (has("sd-x-squares", "sd-x-sum")) {
       drawHorizontalDeviationSquares("#0ea5e9", "rgba(14, 165, 233, 0.11)");
     }
+    if (guide.stretch && selectedHas("sd-y-squares", "sd-y-sum")) {
+      drawSquaredDeviationStretch("y", "#ff4fd8", "rgba(255, 79, 216, 0.2)");
+    }
+    if (guide.stretch && selectedHas("sd-x-squares", "sd-x-sum")) {
+      drawSquaredDeviationStretch("x", "#00f5ff", "rgba(0, 245, 255, 0.2)");
+    }
     if (has("sd-y-average")) drawAverageVarianceSquare("y", sdY, varY, "#2f80ed", "rgba(47, 128, 237, 0.09)");
     if (has("sd-x-average")) drawAverageVarianceSquare("x", sdX, varX, "#0ea5e9", "rgba(14, 165, 233, 0.09)");
     if (has("sd-y-length")) drawVerticalSdBracket(sdY);
@@ -7121,6 +7221,12 @@ const drawCalculatorStatisticGuide = (
     }
     if (has("variance-x-squares", "variance-x-sum")) {
       drawHorizontalDeviationSquares("#0ea5e9", "rgba(14, 165, 233, 0.11)");
+    }
+    if (guide.stretch && selectedHas("variance-y-squares", "variance-y-sum")) {
+      drawSquaredDeviationStretch("y", "#ff4fd8", "rgba(255, 79, 216, 0.2)");
+    }
+    if (guide.stretch && selectedHas("variance-x-squares", "variance-x-sum")) {
+      drawSquaredDeviationStretch("x", "#00f5ff", "rgba(0, 245, 255, 0.2)");
     }
     if (has("variance-y-average")) {
       drawAverageVarianceSquare("y", sdY, varY, "#6f2da8", "rgba(155, 81, 224, 0.1)");
@@ -7332,6 +7438,10 @@ const drawCorrelationGuide = (
     );
   }
 
+  if (showAll || has("denominator")) {
+    drawCorrelationNormalizationBox(context, geometry, width, height, toScreen);
+  }
+
   if (showComovement) {
     geometry.items.forEach((item) => {
       const isolatePositive = has("positive-comovement") && !has("comovement", "negative-comovement") && !showAll;
@@ -7472,6 +7582,63 @@ const drawComovementRectangle = (
   );
 };
 
+const drawCorrelationNormalizationBox = (
+  context: CanvasRenderingContext2D,
+  geometry: ReturnType<typeof buildCorrelationGeometry>,
+  width: number,
+  height: number,
+  toScreen: (point: GraphPoint) => { x: number; y: number }
+) => {
+  const xVectorLength = Math.sqrt(geometry.xSpread);
+  const yVectorLength = Math.sqrt(geometry.ySpread);
+  if (xVectorLength < 0.000001 || yVectorLength < 0.000001) return;
+  const color = "#facc15";
+  const fill = "rgba(250, 204, 21, 0.14)";
+  const mean = { x: geometry.meanX, y: geometry.meanY };
+  const corner = {
+    x: geometry.meanX + xVectorLength,
+    y: geometry.meanY + yVectorLength,
+  };
+  const meanScreen = toScreen({ id: 0, ...mean });
+  const xEnd = toScreen({ id: 0, x: corner.x, y: geometry.meanY });
+  const yEnd = toScreen({ id: 0, x: geometry.meanX, y: corner.y });
+  const cornerScreen = toScreen({ id: 0, ...corner });
+  drawCorrelationRectangle(context, mean.x, mean.y, corner.x, corner.y, toScreen, fill, color);
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.shadowColor = color;
+  context.shadowBlur = 8;
+  context.lineWidth = 3;
+  context.setLineDash([9, 5]);
+  context.beginPath();
+  context.moveTo(meanScreen.x, meanScreen.y);
+  context.lineTo(xEnd.x, xEnd.y);
+  context.moveTo(meanScreen.x, meanScreen.y);
+  context.lineTo(yEnd.x, yEnd.y);
+  context.stroke();
+  context.setLineDash([]);
+  context.font = "900 11px Inter, system-ui, sans-serif";
+  context.fillText(`||dx|| = ${formatNumber(xVectorLength)}`, (meanScreen.x + xEnd.x) / 2 + 6, meanScreen.y - 8);
+  context.fillText(`||dy|| = ${formatNumber(yVectorLength)}`, meanScreen.x + 8, (meanScreen.y + yEnd.y) / 2);
+  context.restore();
+  drawCorrelationObjectLabel(
+    context,
+    {
+      x: clamp((meanScreen.x + cornerScreen.x) / 2 + 8, 12, width - 260),
+      y: clamp((meanScreen.y + cornerScreen.y) / 2, 58, height - 92),
+    },
+    [
+      "normalizer = maximum possible comovement",
+      `max = ||dx|| * ||dy|| = ${formatNumber(geometry.denominator)}`,
+      `actual = ${formatNumber(geometry.rawComovement)}`,
+      `r = actual / max = ${geometry.coefficient === null ? "undefined" : formatNumber(geometry.coefficient)}`,
+      "scale removed: only alignment remains",
+    ],
+    "#a16207"
+  );
+};
+
 const drawCorrelationRectangle = (
   context: CanvasRenderingContext2D,
   x1: number,
@@ -7557,6 +7724,9 @@ const drawCorrelationSummary = (
     lines.push(`Σ[(xi - x̄)(yi - ȳ)] = ${formatNumber(geometry.rawComovement)}`);
   }
   if (active.has("denominator") || active.has("all")) {
+    lines.push("denominator = maximum possible comovement");
+    lines.push(`r = actual / max = ${geometry.coefficient === null ? "undefined" : formatNumber(geometry.coefficient)}`);
+    lines.push("normalization removes x/y scale");
     lines.push(`√[${formatNumber(geometry.xSpread)} × ${formatNumber(geometry.ySpread)}] = ${formatNumber(geometry.denominator)}`);
   }
   if (active.has("all")) lines.push(`r = ${geometry.coefficient === null ? "undefined" : formatNumber(geometry.coefficient)}`);

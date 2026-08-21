@@ -5,6 +5,11 @@ type ParseDataValuesResult =
   | { ok: true; values: DataValue[] }
   | { ok: false; message: string };
 
+type NumericDataRow = {
+  numbers: Array<number | null>;
+  rowIndex: number;
+};
+
 const numberPattern = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[-+]?\\d+)?";
 
 export const parseDataValues = (input: string): ParseDataValuesResult => {
@@ -30,24 +35,25 @@ export const parseDataValues = (input: string): ParseDataValuesResult => {
     .filter(Boolean)
     .map(splitDataRow);
 
+  const headerColumns = findHeaderColumns(rows);
   const numericRows = rows
-    .map((row) => row.map(readNumberFromCell))
-    .filter((row) => row.some((value) => value !== null));
-  const maxColumns = Math.max(...numericRows.map((row) => row.length), 0);
-  const columnCounts = Array.from({ length: maxColumns }, (_, column) =>
-    numericRows.filter((row) => row[column] !== null).length
-  );
-  const bestColumns = columnCounts
-    .map((count, column) => ({ count, column }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count || a.column - b.column);
-  const xColumn = bestColumns[0]?.column ?? -1;
-  const yColumn = bestColumns[1]?.column ?? -1;
+    .map((cells, rowIndex): NumericDataRow => ({
+      numbers: cells.map(readNumberFromCell),
+      rowIndex,
+    }))
+    .filter(
+      (row) =>
+        row.rowIndex > (headerColumns?.rowIndex ?? -1) &&
+        row.numbers.some((value) => value !== null)
+    );
+  const [xColumn, yColumn] = headerColumns
+    ? [headerColumns.xColumn, headerColumns.yColumn]
+    : inferNumericColumns(numericRows);
   const values: DataValue[] = [];
 
   numericRows.forEach((row, index) => {
-    const xValue = row[xColumn];
-    const yValue = row[yColumn];
+    const xValue = row.numbers[xColumn];
+    const yValue = row.numbers[yColumn];
     if (
       xColumn >= 0 &&
       yColumn >= 0 &&
@@ -61,7 +67,7 @@ export const parseDataValues = (input: string): ParseDataValuesResult => {
       return;
     }
 
-    const numericCells = row.filter((value): value is number => value !== null);
+    const numericCells = row.numbers.filter((value): value is number => value !== null);
     if (numericCells.length >= 2) {
       values.push({
         x: roundCoordinate(numericCells[0]),
@@ -112,35 +118,19 @@ const parseJsonDataValues = (input: string) => {
         const numeric = item
           .map((value) => readNumberFromCell(String(value)))
           .filter((value): value is number => value !== null);
-        if (numeric.length >= 2) {
-          values.push({
-            x: roundCoordinate(numeric[0]),
-            y: roundCoordinate(numeric[1]),
-          });
-        } else if (numeric.length === 1) {
-          values.push({ x: index, y: roundCoordinate(numeric[0]) });
-        }
+        const value = getDataValueFromNumericCells(numeric, index);
+        if (value) values.push(value);
         return;
       }
 
       if (item && typeof item === "object") {
         const record = item as Record<string, unknown>;
-        const entries = Object.entries(record);
-        const xEntry =
-          entries.find(([key]) => /^x$|time|date|year/i.test(key)) ??
-          entries.find(([, value]) => readNumberFromCell(String(value)) !== null);
-        const yEntry =
-          entries.find(([key]) => /^y$|value|amount|price|count|score/i.test(key)) ??
-          entries.find(
-            ([key, value]) =>
-              key !== xEntry?.[0] && readNumberFromCell(String(value)) !== null
-          );
-        const x = xEntry ? readNumberFromCell(String(xEntry[1])) : null;
-        const y = yEntry ? readNumberFromCell(String(yEntry[1])) : null;
-        if (x !== null && y !== null) {
-          values.push({ x: roundCoordinate(x), y: roundCoordinate(y) });
-        } else if (y !== null) {
-          values.push({ x: index, y: roundCoordinate(y) });
+        const x = readObjectNumber(record, isXHeader);
+        const y = readObjectNumber(record, isYHeader, x?.key);
+        if (x && y) {
+          values.push({ x: roundCoordinate(x.value), y: roundCoordinate(y.value) });
+        } else if (y) {
+          values.push({ x: index, y: roundCoordinate(y.value) });
         }
       }
     });
@@ -149,6 +139,104 @@ const parseJsonDataValues = (input: string) => {
     return [];
   }
 };
+
+const findHeaderColumns = (rows: string[][]) => {
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, 6); rowIndex += 1) {
+    const row = rows[rowIndex];
+    const xColumn = row.findIndex(isXHeader);
+    const yColumn = row.findIndex(isYHeader);
+    if (xColumn >= 0 && yColumn >= 0 && xColumn !== yColumn) {
+      return { rowIndex, xColumn, yColumn };
+    }
+  }
+  return null;
+};
+
+const inferNumericColumns = (rows: NumericDataRow[]) => {
+  const maxColumns = Math.max(0, ...rows.map((row) => row.numbers.length));
+  const columnCounts = Array.from({ length: maxColumns }, (_, column) => ({
+    column,
+    count: rows.filter((row) => row.numbers[column] !== null).length,
+  })).filter((item) => item.count > 0);
+  const nonIndexColumns = columnCounts.filter(
+    (item) => !isLikelyIndexColumn(rows, item.column)
+  );
+  const candidates = nonIndexColumns.length >= 2 ? nonIndexColumns : columnCounts;
+  const bestColumns = candidates.sort((a, b) => b.count - a.count || a.column - b.column);
+  return [bestColumns[0]?.column ?? -1, bestColumns[1]?.column ?? -1] as const;
+};
+
+const isLikelyIndexColumn = (rows: NumericDataRow[], column: number) => {
+  const values = rows
+    .map((row) => row.numbers[column])
+    .filter((value): value is number => value !== null);
+  if (values.length < 3 || values.length !== rows.length) return false;
+  if (!values.every((value) => Number.isInteger(value))) return false;
+  const startsAtZero = values.every((value, index) => value === index);
+  const startsAtOne = values.every((value, index) => value === index + 1);
+  return startsAtZero || startsAtOne;
+};
+
+const getDataValueFromNumericCells = (numericCells: number[], index: number) => {
+  if (numericCells.length >= 2) {
+    return {
+      x: roundCoordinate(numericCells[0]),
+      y: roundCoordinate(numericCells[1]),
+    };
+  }
+  if (numericCells.length === 1) {
+    return { x: index, y: roundCoordinate(numericCells[0]) };
+  }
+  return null;
+};
+
+const readObjectNumber = (
+  record: Record<string, unknown>,
+  keyMatcher: (key: string) => boolean,
+  ignoredKey?: string
+) => {
+  const entries = Object.entries(record);
+  const matchedEntry = entries.find(([key]) => key !== ignoredKey && keyMatcher(key));
+  const numericEntry =
+    matchedEntry ??
+    entries.find(
+      ([key, value]) => key !== ignoredKey && readNumberFromCell(String(value)) !== null
+    );
+  if (!numericEntry) return null;
+  const value = readNumberFromCell(String(numericEntry[1]));
+  return value === null ? null : { key: numericEntry[0], value };
+};
+
+const normalizeHeader = (cell: string) =>
+  cell.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const isXHeader = (cell: string) =>
+  [
+    "x",
+    "xcoordinate",
+    "xcoord",
+    "xvalue",
+    "time",
+    "date",
+    "year",
+    "input",
+    "independent",
+  ].includes(normalizeHeader(cell));
+
+const isYHeader = (cell: string) =>
+  [
+    "y",
+    "ycoordinate",
+    "ycoord",
+    "yvalue",
+    "value",
+    "amount",
+    "price",
+    "count",
+    "score",
+    "output",
+    "dependent",
+  ].includes(normalizeHeader(cell));
 
 const splitDataRow = (row: string) => {
   const matches = row.match(/"[^"]*"|'[^']*'|[^,\t; ]+/g);
@@ -162,3 +250,4 @@ const readNumberFromCell = (cell: string) => {
   const value = Number(match[0]);
   return Number.isFinite(value) ? value : null;
 };
+

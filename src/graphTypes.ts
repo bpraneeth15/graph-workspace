@@ -179,6 +179,7 @@ export type CalculatorGuide = {
   statistic?: "MEAN" | "SD" | "VAR" | "COVAR" | "MEDIAN";
   highlights?: StatisticHighlight[];
   pairs?: DataValue[];
+  stretch?: boolean;
 };
 
 export type CalculatorMeanPoint = {

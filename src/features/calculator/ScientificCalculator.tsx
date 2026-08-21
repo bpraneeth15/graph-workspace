@@ -63,6 +63,18 @@ const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
 const CALCULATOR_INPUT_DETACH_WIDTH = 270;
 const CALCULATOR_DETACHED_INPUT_WIDTH = 326;
 type ResizeDirection = (typeof RESIZE_DIRECTIONS)[number];
+const STRETCHABLE_STATISTIC_TERMS: StatisticHighlight[] = [
+  "sd-y-squares",
+  "sd-y-sum",
+  "sd-x-squares",
+  "sd-x-sum",
+  "variance-y-squares",
+  "variance-y-sum",
+  "variance-x-squares",
+  "variance-x-sum",
+];
+const canStretchStatistic = (highlights: StatisticHighlight[]) =>
+  highlights.some((highlight) => STRETCHABLE_STATISTIC_TERMS.includes(highlight));
 
 export const ScientificCalculator = ({
   context,
@@ -77,6 +89,7 @@ export const ScientificCalculator = ({
   const [correlationHighlights, setCorrelationHighlights] =
     useState<CorrelationHighlight[]>([]);
   const [statisticHighlights, setStatisticHighlights] = useState<StatisticHighlight[]>([]);
+  const [statisticStretch, setStatisticStretch] = useState(false);
   const [formulaPanel, setFormulaPanel] = useState<FormulaPanel | null>(null);
   const [position, setPosition] = useState({ x: 380, y: 84 });
   const [size, setSize] = useState<{ width: number; height?: number }>({ width: 340 });
@@ -157,9 +170,17 @@ export const ScientificCalculator = ({
       setError("");
       setCorrelationHighlights([]);
       setStatisticHighlights([]);
+      setStatisticStretch(false);
       onCorrelationGuideChange(null);
       onMeanPointChange(null);
-      onGuideChange({ highlights: [], label: `${name} = ${value}`, pairs, statistic: name, value });
+      onGuideChange({
+        highlights: [],
+        label: `${name} = ${value}`,
+        pairs,
+        statistic: name,
+        stretch: false,
+        value,
+      });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not calculate");
       onGuideChange(null);
@@ -169,6 +190,7 @@ export const ScientificCalculator = ({
   const showCorrelationPanel = () => {
     setFormulaPanel("r");
     setStatisticHighlights([]);
+    setStatisticStretch(false);
     setError("");
     onGuideChange(null);
     onMeanPointChange(null);
@@ -187,7 +209,9 @@ export const ScientificCalculator = ({
       const nextHighlights = statisticHighlights.includes(highlight)
         ? statisticHighlights.filter((current) => current !== highlight)
         : [...statisticHighlights, highlight];
+      const nextStretch = statisticStretch && canStretchStatistic(nextHighlights);
       setStatisticHighlights(nextHighlights);
+      setStatisticStretch(nextStretch);
       setCorrelationHighlights([]);
       setError("");
       onCorrelationGuideChange(null);
@@ -199,6 +223,7 @@ export const ScientificCalculator = ({
               label: `${statistic} = ${value}`,
               pairs,
               statistic,
+              stretch: nextStretch,
               value,
             }
           : null
@@ -227,6 +252,40 @@ export const ScientificCalculator = ({
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not visualize correlation");
       onCorrelationGuideChange(null);
+    }
+  };
+
+  const toggleStatisticStretch = () => {
+    if (!formulaPanel || formulaPanel === "r") return;
+    try {
+      const pairs = getCalculatorPairs(context);
+      if (pairs.length === 0) {
+        throw new Error(`${formulaPanel} needs at least one x,y pair.`);
+      }
+      const value = calculateStatistic(formulaPanel, context);
+      const nextStretch = !statisticStretch;
+      const appliedStretch = nextStretch && canStretchStatistic(statisticHighlights);
+      setStatisticStretch(nextStretch);
+      setError(
+        nextStretch && !appliedStretch
+          ? "Select a squared deviation or squared-sum term to stretch it."
+          : ""
+      );
+      onGuideChange(
+        statisticHighlights.length > 0
+          ? {
+              highlights: statisticHighlights,
+              label: `${formulaPanel} = ${value}`,
+              pairs,
+              statistic: formulaPanel,
+              stretch: appliedStretch,
+              value,
+            }
+          : null
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Could not stretch statistic");
+      onGuideChange(null);
     }
   };
 
@@ -517,6 +576,19 @@ export const ScientificCalculator = ({
                   </button>
                 ))}
               </div>
+              {(formulaPanel === "SD" || formulaPanel === "VAR") ? (
+                <div className="statistic-stretch-row">
+                  <button
+                    className={statisticStretch ? "active" : ""}
+                    onClick={toggleStatisticStretch}
+                    title="Stretch selected squared deviations so distance from the mean becomes signed squared distance."
+                    type="button"
+                  >
+                    Stretch
+                  </button>
+                  <span>Shows how squaring increases the weight of large deviations.</span>
+                </div>
+              ) : null}
               <small>
                 {STATISTIC_FORMULA_COMPONENTS[formulaPanel]
                   .filter((term) => statisticHighlights.includes(term.id))

@@ -121,7 +121,7 @@ export const CORRELATION_FORMULA_COMPONENTS: CorrelationFormulaComponent[] = [
     id: "denominator",
     label: "√(Σdx² Σdy²)",
     title: "Show the correlation normalization factor",
-    explanation: "The denominator is the square root of horizontal spread total multiplied by vertical spread total.",
+    explanation: "The denominator removes x/y scale by showing the maximum possible comovement from total x spread and total y spread.",
     visualType: "normalization-factor",
   },
 ];
